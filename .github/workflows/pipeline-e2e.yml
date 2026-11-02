@@ -3,12 +3,20 @@ name: pipeline-e2e
 # E2E del pipeline de 3 bots: tres clientes reales (Forge 1.8.9 con portablemc bajo Xvfb) contra Spigot 1.8.8 con
 # MinecadiaEmu (AH, history, /bal, botellas, runas, /blender) y un Postgres como almacen compartido.
 # Orquestador, Runero y Sniper arman el set de tools/MinecadiaEmu/e2e/target.tsv y check.py compara la verdad del
-# server con el almacen. Se dispara al subir pipeline*.enc (el codigo privado va cifrado con CZ_KEY).
+# server con el almacen.
+# Fuente del codigo privado:
+#   - workflow_dispatch con el secreto MINECADIA_READ_TOKEN (token fine-grained de solo lectura de minecadia-client):
+#     baja la rama del pipeline y le mezcla las ramas de ChestZones, ItemSniper y AutoEnchant en el runner.
+#   - push de pipeline*.enc: descifra el paquete con CZ_KEY (la via manual de antes).
 
 on:
   push:
     paths: ["pipeline*.enc"]
   workflow_dispatch:
+    inputs:
+      branch:
+        description: rama de minecadia-client con el pipeline
+        default: claude/project-thread-06u09h
 
 permissions:
   contents: read
@@ -41,7 +49,34 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fetch private sources
+        id: private
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          test -n "$TOKEN" || { echo "sin MINECADIA_READ_TOKEN: uso el paquete cifrado"; exit 0; }
+          git init -q src && cd src
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
+            fetch -q --no-tags https://github.com/reidethebest/minecadia-client.git \
+            "+refs/heads/${{ inputs.branch || 'claude/project-thread-06u09h' }}:refs/heads/base" \
+            "+refs/heads/chestzones-module:refs/heads/m1" "+refs/heads/claude/itemsniper-sim:refs/heads/m2" \
+            "+refs/heads/claude/autoenchant-sim:refs/heads/m3"
+          git -c advice.detachedHead=false checkout -q base
+          git config user.email e2e@local; git config user.name e2e
+          for m in m1 m2 m3; do
+            if ! git merge -q --no-edit "$m" >/dev/null 2>&1; then
+              bad=$(git diff --name-only --diff-filter=U | grep -E '^(minecadia|pipeline|tools/MinecadiaEmu)/' || true)
+              if [ -n "$bad" ]; then echo "conflicto en codigo al mezclar $m:"; echo "$bad"; exit 1; fi
+              git checkout -q --theirs -- $(git diff --name-only --diff-filter=U); git add -A; git commit -q --no-edit
+            fi
+          done
+          for r in base m1 m2 m3; do git log --oneline -1 "$r"; done
+          cd .. && mv src/minecadia src/pipeline . && mkdir -p tools && rm -rf tools/MinecadiaEmu && mv src/tools/MinecadiaEmu tools/ && rm -rf src
+          echo "done=1" >> "$GITHUB_OUTPUT"
+
       - name: Decrypt sources
+        if: steps.private.outputs.done != '1'
         env:
           CZ_KEY: ${{ secrets.CZ_KEY }}
         run: |
