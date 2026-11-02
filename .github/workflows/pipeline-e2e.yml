@@ -55,17 +55,17 @@ jobs:
         with:
           distribution: temurin
           java-version: '8'
-          cache: gradle
 
-      - name: Cache Spigot 1.8.8
+      - name: Restore Spigot 1.8.8
         id: spigot
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: spigot
           key: spigot-1.8.8-v1
 
-      - name: Cache Minecraft + Forge 1.8.9
-        uses: actions/cache@v4
+      - name: Restore Minecraft + Forge 1.8.9
+        id: mc
+        uses: actions/cache/restore@v4
         with:
           path: mc
           key: mc-forge-1.8.9-v1
@@ -103,7 +103,7 @@ jobs:
         working-directory: minecadia
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon --build-cache reobfShadowJar
+          ./gradlew --no-daemon reobfShadowJar
           ls -la build/libs
 
       - name: Wait for server and clients
@@ -112,7 +112,27 @@ jobs:
           tail -20 prep.log; grep -q PREP_OK prep.log
           for i in $(seq 1 60); do grep -q "Done (" server/server.log && break; sleep 2; done
           tail -3 server/server.log
-          mkdir -p mc/mods && rm -f mc/mods/*.jar
+          rm -rf mc/mods
+
+      # se guardan aunque la prueba falle despues (sin nada privado: solo Spigot y Minecraft/Forge vanilla)
+      - name: Save Spigot cache
+        if: steps.spigot.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
+
+      - name: Save Minecraft cache
+        if: steps.mc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: mc
+          key: mc-forge-1.8.9-v1
+
+      # el jar del cliente (privado) entra recien despues de guardar el cache, para que nunca quede en el cache
+      - name: Install client mod
+        run: |
+          mkdir -p mc/mods
           JAR=$(ls -S minecadia/build/libs/*.jar | grep -v sources | head -1)
           echo "mod jar: $JAR"
           cp "$JAR" mc/mods/
