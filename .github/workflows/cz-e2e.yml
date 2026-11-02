@@ -6,7 +6,7 @@ name: cz-e2e
 
 on:
   push:
-    paths: ["cz.tar.gz.enc", ".github/workflows/cz-e2e.yml"]
+    paths: ["*.enc", ".github/workflows/cz-e2e.yml"]
   workflow_dispatch:
 
 permissions:
@@ -22,13 +22,18 @@ jobs:
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Decrypt sources
         env:
           CZ_KEY: ${{ secrets.CZ_KEY }}
         run: |
           test -n "$CZ_KEY" || { echo "missing secret CZ_KEY"; exit 1; }
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in cz.tar.gz.enc -pass env:CZ_KEY | tar xz
+          # the newest uploaded archive, whatever the uploader named it (phones add " 2" to a repeated name)
+          ENC=$(for f in *.enc; do echo "$(git log -1 --format=%ct -- "$f") $f"; done | sort -n | tail -1 | cut -d' ' -f2-)
+          echo "archive: $ENC"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$ENC" -pass env:CZ_KEY | tar xz
 
       - name: Set up JDK 8
         uses: actions/setup-java@v4
