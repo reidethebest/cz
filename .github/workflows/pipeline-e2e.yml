@@ -20,7 +20,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:16
@@ -57,13 +57,6 @@ jobs:
           java-version: '8'
           cache: gradle
 
-      - name: Build client jar
-        working-directory: minecadia
-        run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon clean reobfShadowJar
-          ls -la build/libs
-
       - name: Cache Spigot 1.8.8
         id: spigot
         uses: actions/cache@v4
@@ -71,57 +64,59 @@ jobs:
           path: spigot
           key: spigot-1.8.8-v1
 
-      - name: Build Spigot 1.8.8 (BuildTools)
-        if: steps.spigot.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p bt spigot
-          cd bt
-          curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
-          java -jar BuildTools.jar --rev 1.8.8 > buildtools.log 2>&1 || (tail -50 buildtools.log; exit 1)
-          cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar
+      - name: Cache Minecraft + Forge 1.8.9
+        uses: actions/cache@v4
+        with:
+          path: mc
+          key: mc-forge-1.8.9-v1
 
-      - name: Build MinecadiaEmu plugin
+      # mientras compila el cliente: Spigot, plugin, server y la instalacion de los clientes en paralelo
+      - name: Start server and install clients (background)
         run: |
-          cd tools/MinecadiaEmu
-          mkdir -p out
-          javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java
-          jar cf MinecadiaEmu.jar -C out . -C src/main/resources .
-
-      - name: Start server
-        run: |
+          cat > prep.sh <<'PREP'
+          set -e
+          if [ ! -f spigot/spigot-1.8.8.jar ]; then
+            mkdir -p bt spigot; cd bt
+            curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
+            java -jar BuildTools.jar --rev 1.8.8 > buildtools.log 2>&1 || (tail -50 buildtools.log; exit 1)
+            cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar; cd ..
+          fi
+          (cd tools/MinecadiaEmu && mkdir -p out && javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java && jar cf MinecadiaEmu.jar -C out . -C src/main/resources .)
           mkdir -p server/plugins/MinecadiaEmu
           cp spigot/spigot-1.8.8.jar server/
           cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
           cp tools/MinecadiaEmu/e2e/config-e2e.yml server/plugins/MinecadiaEmu/config.yml
           cd server
           echo "eula=true" > eula.txt
-          cat > server.properties <<'PROPS'
-          online-mode=false
-          level-type=FLAT
-          generate-structures=false
-          spawn-protection=0
-          spawn-monsters=false
-          spawn-animals=false
-          view-distance=6
-          max-players=10
-          motd=pipeline-e2e
-          PROPS
+          printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\nmax-players=10\nmotd=pipeline-e2e\n' > server.properties
           nohup java -Xmx1G -jar spigot-1.8.8.jar nogui > server.log 2>&1 &
-          for i in $(seq 1 120); do grep -q "Done (" server.log && break; sleep 2; done
-          tail -5 server.log
-
-      - name: Install clients (portablemc, Forge 1.8.9)
-        run: |
+          cd ..
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb libgl1-mesa-dri libglx-mesa0 x11-xserver-utils libxrandr2 libxcursor1 libxxf86vm1 libxtst6 postgresql-client > /dev/null
           pip install -q portablemc
-          portablemc start --main-dir "$PWD/mc" --dry forge:1.8.9
-          mkdir -p mc/mods
+          portablemc start --main-dir "$PWD/mc" --dry forge:1.8.9 > portablemc.log 2>&1
+          echo PREP_OK
+          PREP
+          nohup bash prep.sh > prep.log 2>&1 &
+
+      - name: Build client jar
+        working-directory: minecadia
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --build-cache reobfShadowJar
+          ls -la build/libs
+
+      - name: Wait for server and clients
+        run: |
+          for i in $(seq 1 180); do grep -q "PREP_OK" prep.log && break; sleep 5; done
+          tail -20 prep.log; grep -q PREP_OK prep.log
+          for i in $(seq 1 60); do grep -q "Done (" server/server.log && break; sleep 2; done
+          tail -3 server/server.log
+          mkdir -p mc/mods && rm -f mc/mods/*.jar
           JAR=$(ls -S minecadia/build/libs/*.jar | grep -v sources | head -1)
           echo "mod jar: $JAR"
           cp "$JAR" mc/mods/
-          cp -r mc mc2
-          cp -r mc mc3
+          rm -rf mc2 mc3; cp -r mc mc2; cp -r mc mc3
 
       - name: Run 3 clients
         run: |
@@ -135,17 +130,17 @@ jobs:
               "--jvm-arg=-Dminecadia.pipeline.target=$E2E/target.tsv" forge:1.8.9 > "client-$3.out" 2>&1
           }
           run_client mc Orquestador orquestador & P1=$!
-          sleep 60
+          sleep 20
           run_client mc2 Runero runero & P2=$!
-          sleep 60
+          sleep 20
           run_client mc3 Sniper sniper & P3=$!
-          # corta antes si el BOM quedo aplicado entero
-          for i in $(seq 1 340); do
+          # como mucho 15 min de juego; corta antes si el BOM quedo aplicado entero
+          for i in $(seq 1 90); do
             sleep 10
             left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
             if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom')" != "0" ]; then echo "BOM completo a los $((i*10)) s"; break; fi
           done
-          sleep 30
+          sleep 10
           kill $P1 $P2 $P3 2>/dev/null; sleep 10
           for r in orquestador runero sniper; do
             echo "=== $r: key lines ==="
