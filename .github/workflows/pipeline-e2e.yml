@@ -112,12 +112,14 @@ jobs:
         continue-on-error: true
         working-directory: minecadia
         run: |
-          ./gradlew --no-daemon --continue test --tests '*autoenchant*' --tests '*itemsniper*' --tests '*chestzones*'
+          set -o pipefail
+          ./gradlew --no-daemon --continue test --tests '*autoenchant*' --tests '*itemsniper*' --tests '*chestzones*' 2>&1 | tee tests.log
 
       - name: Module test failures
         if: steps.tests.outcome == 'failure'
         working-directory: minecadia
         run: |
+          grep -E "^e: |FAILED" tests.log | cut -c1-400 | head -40 || true
           python3 - <<'PY'
           import glob, xml.etree.ElementTree as ET
           for f in glob.glob("build/test-results/test/*.xml"):
@@ -201,5 +203,8 @@ jobs:
       - name: Check
         run: |
           # el dump final lo escribe el plugin al apagarse
-          pkill -f spigot-1.8.8.jar; sleep 15
+          pkill -f spigot-1.8.8.jar
+          for i in $(seq 1 60); do pgrep -f spigot-1.8.8.jar >/dev/null || break; sleep 2; done
+          ls server/plugins/MinecadiaEmu/ || true
+          test -f server/plugins/MinecadiaEmu/final.json || tail -30 server/server.log
           python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu tools/MinecadiaEmu/e2e/target.tsv
