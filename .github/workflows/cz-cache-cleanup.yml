@@ -1,0 +1,21 @@
+name: cz-cache-cleanup
+# one-off: drop the old setup-java gradle caches (they could hold compiled private classes); Spigot/vanilla stay
+on:
+  push:
+    branches: [cz]
+    paths: [".github/workflows/cz-cache-cleanup.yml"]
+  workflow_dispatch:
+permissions:
+  actions: write
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete setup-java caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh cache list -R "$REPO" -L 100 --json id,key --jq '.[] | "\(.id) \(.key)"' | tee all.txt
+          grep -E '^[0-9]+ setup-java' all.txt | while read id key; do echo "delete $key"; gh cache delete "$id" -R "$REPO"; done
+          echo "left:"; gh cache list -R "$REPO" -L 100
