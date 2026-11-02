@@ -1,0 +1,131 @@
+name: cz-e2e
+
+# Real client (Forge 1.8.9 via portablemc, under Xvfb) against a Spigot 1.8.8 server with the ChestNopeSim plugin,
+# which answers "Nope" to chest clicks from farther than 3 blocks. The client runs tools/ChestNopeSim/e2e/script.txt
+# (index, take, deposit) and check.py compares the server's real chest contents with the client's index.
+
+on:
+  push:
+    paths: ["cz.tar.gz.enc", ".github/workflows/cz-e2e.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cz-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decrypt sources
+        env:
+          CZ_KEY: ${{ secrets.CZ_KEY }}
+        run: |
+          test -n "$CZ_KEY" || { echo "missing secret CZ_KEY"; exit 1; }
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in cz.tar.gz.enc -pass env:CZ_KEY | tar xz
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: gradle
+
+      - name: Build client jar
+        working-directory: minecadia
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon clean reobfShadowJar
+          ls -la build/libs
+
+      - name: Cache Spigot 1.8.8
+        id: spigot
+        uses: actions/cache@v4
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
+
+      - name: Build Spigot 1.8.8 (BuildTools)
+        if: steps.spigot.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p bt spigot
+          cd bt
+          curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
+          java -jar BuildTools.jar --rev 1.8.8 > buildtools.log 2>&1 || (tail -50 buildtools.log; exit 1)
+          cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar
+
+      - name: Build ChestNopeSim plugin
+        run: |
+          cd tools/ChestNopeSim
+          mkdir -p out
+          javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/com/cznope/*.java
+          jar cf ChestNopeSim.jar -C out . -C src/main/resources .
+
+      - name: Start server
+        run: |
+          mkdir -p server/plugins
+          cp spigot/spigot-1.8.8.jar server/
+          cp tools/ChestNopeSim/ChestNopeSim.jar server/plugins/
+          cd server
+          echo "eula=true" > eula.txt
+          cat > server.properties <<'EOF'
+          online-mode=false
+          level-type=FLAT
+          generate-structures=false
+          spawn-protection=0
+          spawn-monsters=false
+          spawn-animals=false
+          view-distance=6
+          motd=chestzones-e2e
+          EOF
+          nohup java -Xmx1G -jar spigot-1.8.8.jar nogui > server.log 2>&1 &
+          for i in $(seq 1 120); do grep -q "Done (" server.log && break; sleep 2; done
+          tail -5 server.log
+
+      - name: Install client (portablemc, Forge 1.8.9)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libgl1-mesa-dri libglx-mesa0 x11-xserver-utils libxrandr2 libxcursor1 libxxf86vm1 libxtst6 > /dev/null
+          pip install -q portablemc
+          portablemc start --main-dir "$PWD/mc" --dry forge:1.8.9
+          mkdir -p mc/mods
+          JAR=$(ls -S minecadia/build/libs/*.jar | grep -v sources | head -1)
+          echo "mod jar: $JAR"
+          cp "$JAR" mc/mods/
+
+      - name: Run client
+        run: |
+          set +e
+          timeout 3300 xvfb-run -a -s "-screen 0 1280x720x24" portablemc start --main-dir "$PWD/mc" \
+            -u Tester --jvm-arg=-Xmx2G --jvm-arg=-Dminecadia.e2e.server=127.0.0.1 "--jvm-arg=-Dminecadia.e2e.script=$PWD/tools/ChestNopeSim/e2e/script.txt" \
+            forge:1.8.9 > client.out 2>&1
+          echo "client exit: $?"
+          echo "=== client: key lines ==="
+          grep -aE "\[E2E\]|ChestZones|Connecting|Exception|Error|FATAL|crash|joined|Disconnect|kicked|\[CHAT\]" client.out | grep -av "Saved config" | head -1500
+          echo "=== client: last lines ==="
+          grep -av "Saved config" client.out | tail -80
+          echo "=== server log ==="
+          grep -aE "Nope|Open at" server/server.log | sort | uniq -c | sort -rn | head -60
+          echo "=== server log tail ==="
+          tail -60 server/server.log
+
+      - name: Run client again (index persistence)
+        run: |
+          set +e
+          cp mc/logs/latest.log client1.log
+          cp mc/Minecadia/chestzones/*/index.json index_before.json
+          timeout 600 xvfb-run -a -s "-screen 0 1280x720x24" portablemc start --main-dir "$PWD/mc" \
+            -u Tester --jvm-arg=-Xmx2G --jvm-arg=-Dminecadia.e2e.server=127.0.0.1 "--jvm-arg=-Dminecadia.e2e.script=$PWD/tools/ChestNopeSim/e2e/script2.txt" \
+            forge:1.8.9 > client2.out 2>&1
+          echo "client exit: $?"
+          cp mc/logs/latest.log client2.log
+          grep -aE "\[E2E\]|\[CHAT\]" client2.out | head -60
+
+      - name: Check results
+        run: python3 tools/ChestNopeSim/e2e/check.py server/plugins/ChestNopeSim mc client1.log client2.log index_before.json
