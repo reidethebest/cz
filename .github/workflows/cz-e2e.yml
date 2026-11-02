@@ -40,13 +40,13 @@ jobs:
         with:
           distribution: temurin
           java-version: '8'
-          cache: gradle
+          # no gradle cache: the fork is public and ~/.gradle would hold the private client's compiled classes
 
       - name: Build client jar
         working-directory: minecadia
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon clean reobfShadowJar
+          ./gradlew --no-daemon --no-build-cache clean reobfShadowJar
           ls -la build/libs
 
       - name: Cache Spigot 1.8.8
