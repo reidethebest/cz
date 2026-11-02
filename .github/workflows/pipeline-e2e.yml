@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pipeline-e2e-${{ github.ref }}
+  group: pipeline-e2e-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
