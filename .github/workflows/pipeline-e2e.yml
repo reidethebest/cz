@@ -106,6 +106,26 @@ jobs:
           ./gradlew --no-daemon reobfShadowJar
           ls -la build/libs
 
+      # tests de los modulos que usa el pipeline (pedido del hilo de AutoEnchant); no frenan el E2E
+      - name: Module tests
+        id: tests
+        continue-on-error: true
+        working-directory: minecadia
+        run: |
+          ./gradlew --no-daemon --continue test --tests '*autoenchant*' --tests '*itemsniper*' --tests '*chestzones*'
+
+      - name: Module test failures
+        if: steps.tests.outcome == 'failure'
+        working-directory: minecadia
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for f in glob.glob("build/test-results/test/*.xml"):
+              for tc in ET.parse(f).getroot().iter("testcase"):
+                  for bad in list(tc.findall("failure")) + list(tc.findall("error")):
+                      print("FAIL", tc.get("classname"), tc.get("name"), "-", (bad.get("message") or "")[:300])
+          PY
+
       - name: Wait for server and clients
         run: |
           for i in $(seq 1 180); do grep -q "PREP_OK" prep.log && break; sleep 5; done
@@ -164,13 +184,19 @@ jobs:
           kill $P1 $P2 $P3 2>/dev/null; sleep 10
           for r in orquestador runero sniper; do
             echo "=== $r: key lines ==="
-            grep -aE "\[PIPELINE\]|\[E2E\]|Exception|FATAL|Disconnect|kicked" "client-$r.out" | head -400
+            grep -aE "\[PIPELINE\]|\[E2E\]|\[CHAT\]|ItemSniper|AutoEnchant|ChestZones|Exception|FATAL|Disconnect|kicked" "client-$r.out" \
+              | grep -avE "Fonts|MalformedURL|discord-ipc|AFUNIXSocket" | cut -c1-300 | head -700
           done
-          echo "=== emulator events (tail) ==="; tail -150 server/plugins/MinecadiaEmu/events.log
+          echo "=== emulator events (sin altas/vencimientos del mercado) ==="
+          grep -vE "^[0-9]+ (list|expire) " server/plugins/MinecadiaEmu/events.log | tail -200
           echo "=== store ==="
           psql -c "select spec_key, required, applied from bom"
           psql -c "select id, claim_id, item_key, qty, unit_price, status from purchase order by id"
           psql -c "select type, count(*) from event group by type order by 2 desc"
+          psql -c "select id, spec_key, qty, urgent, open from claim order by id"
+          psql -c "select id, spec_key, qty, made, state, waiting_on from rune_order order by id"
+          psql -c "select bot, type, left(detail, 120) as detail from event order by id desc limit 40"
+          psql -c "select location, left(contents::text, 160) as contents from snapshot" || true
 
       - name: Check
         run: |
