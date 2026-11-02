@@ -1,0 +1,164 @@
+name: pipeline-e2e
+
+# E2E del pipeline de 3 bots: tres clientes reales (Forge 1.8.9 con portablemc bajo Xvfb) contra Spigot 1.8.8 con
+# MinecadiaEmu (AH, history, /bal, botellas, runas, /blender) y un Postgres como almacen compartido.
+# Orquestador, Runero y Sniper arman el set de tools/MinecadiaEmu/e2e/target.tsv y check.py compara la verdad del
+# server con el almacen. Se dispara al subir pipeline*.enc (el codigo privado va cifrado con CZ_KEY).
+
+on:
+  push:
+    paths: ["pipeline*.enc"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pipeline
+          POSTGRES_PASSWORD: pipeline
+          POSTGRES_DB: pipeline
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pipeline" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: pipeline
+      PGPASSWORD: pipeline
+      PGDATABASE: pipeline
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decrypt sources
+        env:
+          CZ_KEY: ${{ secrets.CZ_KEY }}
+        run: |
+          test -n "$CZ_KEY" || { echo "missing secret CZ_KEY"; exit 1; }
+          ENC=$(for f in pipeline*.enc; do echo "$(git log -1 --format=%ct -- "$f") $f"; done | sort -n | tail -1 | cut -d' ' -f2-)
+          echo "archive: $ENC"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$ENC" -pass env:CZ_KEY | tar xz
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: gradle
+
+      - name: Build client jar
+        working-directory: minecadia
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon clean reobfShadowJar
+          ls -la build/libs
+
+      - name: Cache Spigot 1.8.8
+        id: spigot
+        uses: actions/cache@v4
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
+
+      - name: Build Spigot 1.8.8 (BuildTools)
+        if: steps.spigot.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p bt spigot
+          cd bt
+          curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
+          java -jar BuildTools.jar --rev 1.8.8 > buildtools.log 2>&1 || (tail -50 buildtools.log; exit 1)
+          cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar
+
+      - name: Build MinecadiaEmu plugin
+        run: |
+          cd tools/MinecadiaEmu
+          mkdir -p out
+          javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java
+          jar cf MinecadiaEmu.jar -C out . -C src/main/resources .
+
+      - name: Start server
+        run: |
+          mkdir -p server/plugins/MinecadiaEmu
+          cp spigot/spigot-1.8.8.jar server/
+          cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
+          cp tools/MinecadiaEmu/e2e/config-e2e.yml server/plugins/MinecadiaEmu/config.yml
+          cd server
+          echo "eula=true" > eula.txt
+          cat > server.properties <<'PROPS'
+          online-mode=false
+          level-type=FLAT
+          generate-structures=false
+          spawn-protection=0
+          spawn-monsters=false
+          spawn-animals=false
+          view-distance=6
+          max-players=10
+          motd=pipeline-e2e
+          PROPS
+          nohup java -Xmx1G -jar spigot-1.8.8.jar nogui > server.log 2>&1 &
+          for i in $(seq 1 120); do grep -q "Done (" server.log && break; sleep 2; done
+          tail -5 server.log
+
+      - name: Install clients (portablemc, Forge 1.8.9)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libgl1-mesa-dri libglx-mesa0 x11-xserver-utils libxrandr2 libxcursor1 libxxf86vm1 libxtst6 postgresql-client > /dev/null
+          pip install -q portablemc
+          portablemc start --main-dir "$PWD/mc" --dry forge:1.8.9
+          mkdir -p mc/mods
+          JAR=$(ls -S minecadia/build/libs/*.jar | grep -v sources | head -1)
+          echo "mod jar: $JAR"
+          cp "$JAR" mc/mods/
+          cp -r mc mc2
+          cp -r mc mc3
+
+      - name: Run 3 clients
+        run: |
+          set +e
+          E2E=$PWD/tools/MinecadiaEmu/e2e
+          run_client() { # dir user role
+            xvfb-run -a -s "-screen 0 854x480x24" portablemc start --main-dir "$PWD/$1" -u "$2" --jvm-arg=-Xmx1G \
+              --jvm-arg=-Dminecadia.e2e.server=127.0.0.1 "--jvm-arg=-Dminecadia.e2e.script=$E2E/$3.txt" \
+              --jvm-arg=-Dminecadia.pipeline.role=$3 --jvm-arg=-Dminecadia.pipeline.pg=jdbc:postgresql://127.0.0.1:5432/pipeline \
+              --jvm-arg=-Dminecadia.pipeline.user=pipeline --jvm-arg=-Dminecadia.pipeline.pass=pipeline \
+              "--jvm-arg=-Dminecadia.pipeline.target=$E2E/target.tsv" forge:1.8.9 > "client-$3.out" 2>&1
+          }
+          run_client mc Orquestador orquestador & P1=$!
+          sleep 60
+          run_client mc2 Runero runero & P2=$!
+          sleep 60
+          run_client mc3 Sniper sniper & P3=$!
+          # corta antes si el BOM quedo aplicado entero
+          for i in $(seq 1 340); do
+            sleep 10
+            left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
+            if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom')" != "0" ]; then echo "BOM completo a los $((i*10)) s"; break; fi
+          done
+          sleep 30
+          kill $P1 $P2 $P3 2>/dev/null; sleep 10
+          for r in orquestador runero sniper; do
+            echo "=== $r: key lines ==="
+            grep -aE "\[PIPELINE\]|\[E2E\]|Exception|FATAL|Disconnect|kicked" "client-$r.out" | head -400
+          done
+          echo "=== emulator events (tail) ==="; tail -150 server/plugins/MinecadiaEmu/events.log
+          echo "=== store ==="
+          psql -c "select spec_key, required, applied from bom"
+          psql -c "select id, claim_id, item_key, qty, unit_price, status from purchase order by id"
+          psql -c "select type, count(*) from event group by type order by 2 desc"
+
+      - name: Check
+        run: |
+          # el dump final lo escribe el plugin al apagarse
+          pkill -f spigot-1.8.8.jar; sleep 15
+          python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu tools/MinecadiaEmu/e2e/target.tsv
