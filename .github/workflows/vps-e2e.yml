@@ -6,7 +6,8 @@ name: vps-e2e
 # vigilante lo vuelve a meter las dos veces. Al final check.py compara la verdad del server con el almacen.
 # Corre en ARM (como Oracle Ampere A1) y en x86. Codigo privado: se baja con MINECADIA_READ_TOKEN y no se sube nada.
 # vps-run.txt: 1ra linea = rama de minecadia-client con deploy/vps; 2da = rama o sha del pipeline (emulador y objetivo);
-# 3ra (opcional) = RAMAS_MODULOS (ramas o shas separados por comas).
+# 3ra (opcional) = RAMAS_MODULOS (ramas o shas separados por comas); 4ta (opcional) = escenario del emulador, p.ej.
+# clon-leggings (usa config-clon-leggings.yml y target-clon-leggings.tsv); vacio = config-e2e.yml y target.tsv.
 
 on:
   push:
@@ -83,7 +84,8 @@ jobs:
           (cd tools/MinecadiaEmu && mkdir -p out && javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java && jar cf MinecadiaEmu.jar -C out . -C src/main/resources .)
           mkdir -p server/plugins/MinecadiaEmu
           cp spigot/spigot-1.8.8.jar server/; cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
-          cp tools/MinecadiaEmu/e2e/config-e2e.yml server/plugins/MinecadiaEmu/config.yml
+          ESC=$(sed -n 4p vps-run.txt | tr -d '[:space:]'); case "$ESC" in ''|\#*) CFG=config-e2e.yml;; *) CFG=config-$ESC.yml;; esac
+          echo "emulador: $CFG"; cp tools/MinecadiaEmu/e2e/$CFG server/plugins/MinecadiaEmu/config.yml
           cd server
           echo "eula=true" > eula.txt
           printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\nmax-players=10\nmotd=vps-e2e\n' > server.properties
@@ -112,7 +114,8 @@ jobs:
             grep -vE '^(quit|chat /emu dump|wait (60000|100)$)' $E2E/$r.txt | sed 's/^cmd ;toggle PipelineBot$/cmd ;toggle PipelineBot on/' > config/inicio-$r.txt
             tail -2 config/inicio-$r.txt
           done
-          cp $E2E/target.tsv config/objetivo.set
+          ESC=$(sed -n 4p ../../vps-run.txt | tr -d '[:space:]'); case "$ESC" in ''|\#*) T=target.tsv;; *) T=target-$ESC.tsv;; esac
+          echo "objetivo: $T"; cp $E2E/$T config/objetivo.set
 
       - name: bots.sh instalar (builds the jar on this machine, Minecraft; docker or native)
         working-directory: deploy/vps
@@ -141,7 +144,7 @@ jobs:
             sudo journalctl --no-pager -n 30 -u 'minecadia-bot-*'; tail -5 data/*/vigilante.log
           fi
           t0=$(date +%s); kicked=0; crashed=0; done=0
-          for i in $(seq 1 150); do
+          for i in $(seq 1 220); do
             sleep 10
             now=$(( $(date +%s) - t0 ))
             # a los 3 min de juego: echa al Runero del server
