@@ -2,8 +2,8 @@ name: vps-e2e
 
 # Prueba del despliegue en VPS (deploy/vps de minecadia-client) tal como lo usaria REIDEN: bots.sh instalar arma el jar
 # en Docker desde el repo privado, levanta Postgres y los 3 bots en contenedores, y estos entran a un Spigot 1.8.8 con
-# MinecadiaEmu en el host. En el medio echa a un bot del server y le mata el cliente a otro, para ver que el vigilante
-# los vuelve a meter. Al final check.py compara la verdad del server con el almacen.
+# MinecadiaEmu en el host. En el medio echa al Runero del server y despues le mata el cliente, para ver que el
+# vigilante lo vuelve a meter las dos veces. Al final check.py compara la verdad del server con el almacen.
 # Corre en ARM (como Oracle Ampere A1) y en x86. Codigo privado: se baja con MINECADIA_READ_TOKEN y no se sube nada.
 # vps-run.txt: 1ra linea = rama de minecadia-client con deploy/vps; 2da = rama del pipeline (emulador y objetivo).
 
@@ -21,10 +21,14 @@ concurrency:
 
 jobs:
   e2e:
+    name: e2e ${{ matrix.modo }} (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04-arm, ubuntu-latest]
+        include:
+          - { runner: ubuntu-24.04-arm, modo: docker }
+          - { runner: ubuntu-latest, modo: docker }
+          - { runner: ubuntu-24.04-arm, modo: nativo }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
     env:
@@ -93,7 +97,8 @@ jobs:
         working-directory: deploy/vps
         run: |
           cp config/bots.env.example config/bots.env
-          sed -i -e 's/^SERVER=.*/SERVER=host.docker.internal/' -e 's/^AUTH=.*/AUTH=offline/' \
+          SRV=host.docker.internal; [ ${{ matrix.modo }} = nativo ] && SRV=127.0.0.1
+          sed -i -e "s/^SERVER=.*/SERVER=$SRV/" -e 's/^AUTH=.*/AUTH=offline/' -e 's/^MODO=.*/MODO=${{ matrix.modo }}/' \
             -e 's/^CUENTA_ORQUESTADOR=.*/CUENTA_ORQUESTADOR=Orquestador/' -e 's/^CUENTA_RUNERO=.*/CUENTA_RUNERO=Runero/' \
             -e 's/^CUENTA_SNIPER=.*/CUENTA_SNIPER=Sniper/' -e 's/^RAM=.*/RAM=1024m/' -e 's/^PG_PASS=.*/PG_PASS=pipeline/' \
             -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' -e "s#^RAMA_BASE=.*#RAMA_BASE=$(sed -n 2p ../../vps-run.txt | tr -d '[:space:]')#" config/bots.env
@@ -105,16 +110,17 @@ jobs:
           done
           cp $E2E/target.tsv config/objetivo.set
 
-      - name: bots.sh instalar (builds the jar in Docker on this machine, image, Minecraft)
+      - name: bots.sh instalar (builds the jar on this machine, Minecraft; docker or native)
         working-directory: deploy/vps
         env:
           GITHUB_TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
         run: |
           start=$(date +%s)
+          if [ ${{ matrix.modo }} = nativo ]; then ./instalar-nativo.sh 2>&1 | tail -15; fi
           ./bots.sh instalar 2>&1 | grep -vE '^\s*$' | tail -40
           test -s data/mod/minecadia.jar
           echo "instalar: $(( $(date +%s) - start )) s"; ls -la /opt 2>/dev/null | head -2
-          docker run --rm --entrypoint sh minecadia-bot:local -c 'uname -m; ls -la /opt/natives 2>/dev/null || echo "sin /opt/natives (x86)"'
+          if [ ${{ matrix.modo }} = docker ]; then docker run --rm --entrypoint sh minecadia-bot:local -c 'uname -m; ls -la /opt/natives 2>/dev/null || echo "sin /opt/natives (x86)"'; else ls -la data/natives 2>/dev/null || true; fi
 
       - name: Wait for server
         run: |
@@ -134,9 +140,12 @@ jobs:
             if [ $kicked = 0 ] && grep -aq '\[E2E\] step 1/' data/runero/logs/cliente-*.out 2>/dev/null && [ $now -gt 240 ]; then
               echo "kick Runero" > ../../server/console; kicked=$now; echo ">>> $now s: kick Runero"
             fi
-            # 2 min despues: mata el java del Sniper (como un crash del cliente)
+            # 2 min despues: mata el java del Runero (como un crash del cliente). No al Sniper: un crash en plena compra deja
+            # la compra en duda para siempre (pendiente conocido del pipeline, no del despliegue)
             if [ $kicked != 0 ] && [ $crashed = 0 ] && [ $now -gt $(( kicked + 120 )) ]; then
-              docker compose --env-file config/bots.env exec -T sniper pkill -9 -f 'java.*minecadia' ; crashed=$now; echo ">>> $now s: crash Sniper"
+              if [ ${{ matrix.modo }} = docker ]; then docker compose --env-file config/bots.env exec -T runero pkill -9 -f 'java.*role=runero'
+              else pkill -9 -f 'java.*role=runero'; fi
+              crashed=$now; echo ">>> $now s: crash Runero"
             fi
             left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
             if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom')" != "0" ] && [ $crashed != 0 ]; then
@@ -147,9 +156,10 @@ jobs:
           sleep 15
           echo "=== bots.sh estado ==="; ./bots.sh estado
           echo "=== reinicios ==="; for r in orquestador runero sniper; do echo "-- $r"; cat data/$r/reinicios.log 2>/dev/null; done
-          echo "=== docker logs (vigilante y lineas clave) ==="
+          echo "=== logs del vigilante (lineas clave) ==="
           for r in orquestador runero sniper; do
-            echo "-- $r"; docker compose --env-file config/bots.env logs --no-color $r | grep -aE "\[$r\]|\[PIPELINE\]|Exception|kicked" | grep -avE 'Fonts|discord' | cut -c1-260 | tail -120
+            echo "-- $r"
+            if [ ${{ matrix.modo }} = docker ]; then docker compose --env-file config/bots.env logs --no-color $r; else cat data/$r/vigilante.log; fi | grep -aE "\[$r\]|\[PIPELINE\]|Exception|kicked" | grep -avE 'Fonts|discord' | cut -c1-260 | tail -120
           done
           ./bots.sh backup
           ./bots.sh parar
@@ -167,12 +177,10 @@ jobs:
           ok=1
           grep -q "done=1" result.txt || { echo "FALLA: el set no se completo"; ok=0; }
           grep -q "se desconecto del server" deploy/vps/data/runero/reinicios.log || { echo "FALLA: el vigilante no vio el kick del Runero"; ok=0; }
-          grep -q "el cliente se cerro" deploy/vps/data/sniper/reinicios.log || { echo "FALLA: el vigilante no vio el crash del Sniper"; ok=0; }
+          grep -q "el cliente se cerro" deploy/vps/data/runero/reinicios.log || { echo "FALLA: el vigilante no vio el crash del Runero"; ok=0; }
           [ "$(ls deploy/vps/data/runero/logs/cliente-*.out | wc -l)" -ge 2 ] || { echo "FALLA: el Runero no volvio a arrancar"; ok=0; }
-          for r in runero sniper; do
-            n=$(grep -al '\[E2E\] step 1/' deploy/vps/data/$r/logs/cliente-*.out | wc -l)
-            echo "$r entro al server $n veces"; [ "$n" -ge 2 ] || { echo "FALLA: $r no volvio a entrar"; ok=0; }
-          done
+          n=$(grep -al '\[E2E\] step 1/' deploy/vps/data/runero/logs/cliente-*.out | wc -l)
+          echo "runero entro al server $n veces"; [ "$n" -ge 3 ] || { echo "FALLA: el Runero no volvio a entrar las 2 veces"; ok=0; }
           ls deploy/vps/data/backups/
           python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu deploy/vps/config/objetivo.set || ok=0
           [ $ok = 1 ]
