@@ -1,0 +1,178 @@
+name: vps-e2e
+
+# Prueba del despliegue en VPS (deploy/vps de minecadia-client) tal como lo usaria REIDEN: bots.sh instalar arma el jar
+# en Docker desde el repo privado, levanta Postgres y los 3 bots en contenedores, y estos entran a un Spigot 1.8.8 con
+# MinecadiaEmu en el host. En el medio echa a un bot del server y le mata el cliente a otro, para ver que el vigilante
+# los vuelve a meter. Al final check.py compara la verdad del server con el almacen.
+# Corre en ARM (como Oracle Ampere A1) y en x86. Codigo privado: se baja con MINECADIA_READ_TOKEN y no se sube nada.
+# vps-run.txt: 1ra linea = rama de minecadia-client con deploy/vps; 2da = rama del pipeline (emulador y objetivo).
+
+on:
+  push:
+    paths: ["vps-run.txt", ".github/workflows/vps-e2e.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: pipeline
+      PGPASSWORD: pipeline
+      PGDATABASE: pipeline
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch kit and emulator (private, not committed)
+        env:
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          test -n "$TOKEN" || { echo "missing secret MINECADIA_READ_TOKEN"; exit 1; }
+          KIT=$(sed -n 1p vps-run.txt | tr -d '[:space:]'); BASE=$(sed -n 2p vps-run.txt | tr -d '[:space:]')
+          H="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git init -q /tmp/src
+          git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$KIT"
+          git -C /tmp/src log -1 --format='kit %h %s' FETCH_HEAD
+          git -C /tmp/src archive FETCH_HEAD deploy/vps | tar x
+          git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$BASE"
+          git -C /tmp/src log -1 --format='emu %h %s' FETCH_HEAD
+          git -C /tmp/src archive FETCH_HEAD tools/MinecadiaEmu | tar x
+          rm -rf /tmp/src
+          uname -m; nproc; free -g | head -2; docker compose version
+
+      - name: Set up JDK 8 (Spigot and emulator plugin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Restore Spigot 1.8.8
+        id: spigot
+        uses: actions/cache/restore@v4
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
+
+      - name: Server (background) - Spigot + MinecadiaEmu, console on a fifo
+        run: |
+          cat > srv.sh <<'SRV'
+          set -e
+          if [ ! -f spigot/spigot-1.8.8.jar ]; then
+            mkdir -p bt spigot; cd bt
+            curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
+            java -jar BuildTools.jar --rev 1.8.8 > buildtools.log 2>&1 || (tail -50 buildtools.log; exit 1)
+            cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar; cd ..
+          fi
+          (cd tools/MinecadiaEmu && mkdir -p out && javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java && jar cf MinecadiaEmu.jar -C out . -C src/main/resources .)
+          mkdir -p server/plugins/MinecadiaEmu
+          cp spigot/spigot-1.8.8.jar server/; cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
+          cp tools/MinecadiaEmu/e2e/config-e2e.yml server/plugins/MinecadiaEmu/config.yml
+          cd server
+          echo "eula=true" > eula.txt
+          printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\nmax-players=10\nmotd=vps-e2e\n' > server.properties
+          mkfifo console
+          nohup sleep infinity > console 2>/dev/null &   # un escritor fijo: la consola nunca ve fin de archivo
+          nohup java -Xmx1G -jar spigot-1.8.8.jar nogui < console > server.log 2>&1 &
+          echo SRV_STARTED
+          SRV
+          nohup bash srv.sh > srv.log 2>&1 &
+
+      - name: Configure kit like a VPS (offline accounts, emulator server, e2e base and target)
+        working-directory: deploy/vps
+        run: |
+          cp config/bots.env.example config/bots.env
+          sed -i -e 's/^SERVER=.*/SERVER=host.docker.internal/' -e 's/^AUTH=.*/AUTH=offline/' \
+            -e 's/^CUENTA_ORQUESTADOR=.*/CUENTA_ORQUESTADOR=Orquestador/' -e 's/^CUENTA_RUNERO=.*/CUENTA_RUNERO=Runero/' \
+            -e 's/^CUENTA_SNIPER=.*/CUENTA_SNIPER=Sniper/' -e 's/^RAM=.*/RAM=1024m/' -e 's/^PG_PASS=.*/PG_PASS=pipeline/' \
+            -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' -e "s#^RAMA_BASE=.*#RAMA_BASE=$(sed -n 2p ../../vps-run.txt | tr -d '[:space:]')#" config/bots.env
+          E2E=../../tools/MinecadiaEmu/e2e
+          # el inicio de cada rol = el script del E2E sin el final de prueba (dump, esperas largas y quit)
+          for r in orquestador runero sniper; do
+            grep -vE '^(quit|chat /emu dump|wait (60000|100)$)' $E2E/$r.txt | sed 's/^cmd ;toggle PipelineBot$/cmd ;toggle PipelineBot on/' > config/inicio-$r.txt
+            tail -2 config/inicio-$r.txt
+          done
+          cp $E2E/target.tsv config/objetivo.set
+
+      - name: bots.sh instalar (builds the jar in Docker on this machine, image, Minecraft)
+        working-directory: deploy/vps
+        env:
+          GITHUB_TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          start=$(date +%s)
+          ./bots.sh instalar 2>&1 | grep -vE '^\s*$' | tail -40
+          test -s data/mod/minecadia.jar
+          echo "instalar: $(( $(date +%s) - start )) s"; ls -la /opt 2>/dev/null | head -2
+          docker run --rm --entrypoint sh minecadia-bot:local -c 'uname -m; ls -la /opt/natives 2>/dev/null || echo "sin /opt/natives (x86)"'
+
+      - name: Wait for server
+        run: |
+          for i in $(seq 1 180); do grep -q "Done (" server/server.log 2>/dev/null && break; sleep 5; done
+          tail -3 srv.log; tail -3 server/server.log; grep -q "Done (" server/server.log
+
+      - name: Run the 3 bots unattended (with a kick and a client crash in the middle)
+        working-directory: deploy/vps
+        run: |
+          set +e
+          ./bots.sh arrancar
+          t0=$(date +%s); kicked=0; crashed=0; done=0
+          for i in $(seq 1 150); do
+            sleep 10
+            now=$(( $(date +%s) - t0 ))
+            # a los 3 min de juego: echa al Runero del server
+            if [ $kicked = 0 ] && grep -aq '\[E2E\] step 1/' data/runero/logs/cliente-*.out 2>/dev/null && [ $now -gt 240 ]; then
+              echo "kick Runero" > ../../server/console; kicked=$now; echo ">>> $now s: kick Runero"
+            fi
+            # 2 min despues: mata el java del Sniper (como un crash del cliente)
+            if [ $kicked != 0 ] && [ $crashed = 0 ] && [ $now -gt $(( kicked + 120 )) ]; then
+              docker compose --env-file config/bots.env exec -T sniper pkill -9 -f 'java.*minecadia' ; crashed=$now; echo ">>> $now s: crash Sniper"
+            fi
+            left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
+            if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom')" != "0" ] && [ $crashed != 0 ]; then
+              echo "BOM completo a los $now s"; done=1; break
+            fi
+            [ $(( i % 6 )) = 0 ] && echo "$now s: faltan ${left:-?} lineas"
+          done
+          sleep 15
+          echo "=== bots.sh estado ==="; ./bots.sh estado
+          echo "=== reinicios ==="; for r in orquestador runero sniper; do echo "-- $r"; cat data/$r/reinicios.log 2>/dev/null; done
+          echo "=== docker logs (vigilante y lineas clave) ==="
+          for r in orquestador runero sniper; do
+            echo "-- $r"; docker compose --env-file config/bots.env logs --no-color $r | grep -aE "\[$r\]|\[PIPELINE\]|Exception|kicked" | grep -avE 'Fonts|discord' | cut -c1-260 | tail -120
+          done
+          ./bots.sh backup
+          ./bots.sh parar
+          echo "=== store ==="
+          psql -c "select spec_key, required, applied from bom"
+          psql -c "select id, claim_id, item_key, qty, unit_price, status from purchase order by id"
+          echo "done=$done kicked=$kicked crashed=$crashed" > ../../result.txt
+
+      - name: Check
+        run: |
+          cat result.txt
+          echo stop > server/console
+          for i in $(seq 1 60); do pgrep -f spigot-1.8.8.jar >/dev/null || break; sleep 2; done
+          test -f server/plugins/MinecadiaEmu/final.json || tail -30 server/server.log
+          ok=1
+          grep -q "done=1" result.txt || { echo "FALLA: el set no se completo"; ok=0; }
+          grep -q "se desconecto del server" deploy/vps/data/runero/reinicios.log || { echo "FALLA: el vigilante no vio el kick del Runero"; ok=0; }
+          grep -q "el cliente se cerro" deploy/vps/data/sniper/reinicios.log || { echo "FALLA: el vigilante no vio el crash del Sniper"; ok=0; }
+          [ "$(ls deploy/vps/data/runero/logs/cliente-*.out | wc -l)" -ge 2 ] || { echo "FALLA: el Runero no volvio a arrancar"; ok=0; }
+          for r in runero sniper; do
+            n=$(grep -al '\[E2E\] step 1/' deploy/vps/data/$r/logs/cliente-*.out | wc -l)
+            echo "$r entro al server $n veces"; [ "$n" -ge 2 ] || { echo "FALLA: $r no volvio a entrar"; ok=0; }
+          done
+          ls deploy/vps/data/backups/
+          python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu deploy/vps/config/objetivo.set || ok=0
+          [ $ok = 1 ]
