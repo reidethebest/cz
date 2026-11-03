@@ -4,10 +4,18 @@ name: cz-e2e
 # which answers "Nope" to chest clicks from farther than 3 blocks. The client runs tools/ChestNopeSim/e2e/script.txt
 # (index, take, deposit) and check.py compares the server's real chest contents with the client's index.
 
+# Source of the private code:
+#   - workflow_dispatch, or a push of cz-run.txt (first line: the minecadia-client branch or commit, default
+#     chestzones-module): fetched with the read-only MINECADIA_READ_TOKEN secret, never committed here.
+#   - push of cz*.enc: decrypted with CZ_KEY (the manual way).
 on:
   push:
-    paths: ["cz*.enc", ".github/workflows/cz-e2e.yml"]
+    paths: ["cz*.enc", "cz-run.txt"]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: minecadia-client branch or commit
+        default: chestzones-module
 
 permissions:
   contents: read
@@ -25,15 +33,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Decrypt sources
+      - name: Get sources
         env:
           CZ_KEY: ${{ secrets.CZ_KEY }}
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+          INPUT_REF: ${{ inputs.ref }}
         run: |
-          test -n "$CZ_KEY" || { echo "missing secret CZ_KEY"; exit 1; }
-          # the newest uploaded archive, whatever the uploader named it (phones add " 2" to a repeated name)
-          ENC=$(for f in cz*.enc; do echo "$(git log -1 --format=%ct -- "$f") $f"; done | sort -n | tail -1 | cut -d' ' -f2-)
-          echo "archive: $ENC"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$ENC" -pass env:CZ_KEY | tar xz
+          # newest of: an uploaded archive, or cz-run.txt naming a branch to fetch
+          NEWEST=$(for f in cz*.enc cz-run.txt; do [ -e "$f" ] && echo "$(git log -1 --format=%ct -- "$f") $f"; done | sort -n | tail -1 | cut -d' ' -f2-)
+          if [ "${{ github.event_name }}" = workflow_dispatch ] || [ "$NEWEST" = cz-run.txt ]; then
+            test -n "$TOKEN" || { echo "missing secret MINECADIA_READ_TOKEN"; exit 1; }
+            REF="$INPUT_REF"
+            [ -n "$REF" ] || REF=$(head -1 cz-run.txt 2>/dev/null | tr -d '[:space:]')
+            [ -n "$REF" ] || REF=chestzones-module
+            echo "fetching minecadia-client $REF"
+            git init -q /tmp/src
+            git -C /tmp/src -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
+              fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$REF"
+            git -C /tmp/src log -1 --format='source %H %s' FETCH_HEAD
+            git -C /tmp/src archive FETCH_HEAD minecadia tools/ChestNopeSim | tar x
+            rm -rf /tmp/src
+          else
+            test -n "$CZ_KEY" || { echo "missing secret CZ_KEY"; exit 1; }
+            echo "archive: $NEWEST"
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$NEWEST" -pass env:CZ_KEY | tar xz
+          fi
 
       - name: Set up JDK 8
         uses: actions/setup-java@v4
