@@ -5,7 +5,8 @@ name: vps-e2e
 # MinecadiaEmu en el host. En el medio echa al Runero del server y despues le mata el cliente, para ver que el
 # vigilante lo vuelve a meter las dos veces. Al final check.py compara la verdad del server con el almacen.
 # Corre en ARM (como Oracle Ampere A1) y en x86. Codigo privado: se baja con MINECADIA_READ_TOKEN y no se sube nada.
-# vps-run.txt: 1ra linea = rama de minecadia-client con deploy/vps; 2da = rama del pipeline (emulador y objetivo).
+# vps-run.txt: 1ra linea = rama de minecadia-client con deploy/vps; 2da = rama o sha del pipeline (emulador y objetivo);
+# 3ra (opcional) = RAMAS_MODULOS (ramas o shas separados por comas).
 
 on:
   push:
@@ -102,6 +103,9 @@ jobs:
             -e 's/^CUENTA_ORQUESTADOR=.*/CUENTA_ORQUESTADOR=Orquestador/' -e 's/^CUENTA_RUNERO=.*/CUENTA_RUNERO=Runero/' \
             -e 's/^CUENTA_SNIPER=.*/CUENTA_SNIPER=Sniper/' -e 's/^RAM=.*/RAM=1024m/' -e 's/^PG_PASS=.*/PG_PASS=pipeline/' \
             -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' -e "s#^RAMA_BASE=.*#RAMA_BASE=$(sed -n 2p ../../vps-run.txt | tr -d '[:space:]')#" config/bots.env
+          MOD=$(sed -n 3p ../../vps-run.txt | tr -d '[:space:]')
+          case "$MOD" in ''|\#*) ;; *) sed -i "s#^RAMAS_MODULOS=.*#RAMAS_MODULOS=$MOD#" config/bots.env;; esac
+          grep -E '^(RAMA_BASE|RAMAS_MODULOS)=' config/bots.env
           E2E=../../tools/MinecadiaEmu/e2e
           # el inicio de cada rol = el script del E2E sin el final de prueba (dump, esperas largas y quit)
           for r in orquestador runero sniper; do
@@ -132,6 +136,10 @@ jobs:
         run: |
           set +e
           ./bots.sh arrancar
+          if [ ${{ matrix.modo }} = nativo ]; then
+            sleep 30; for r in orquestador runero sniper; do systemctl status --no-pager minecadia-bot-$r | head -8; done
+            sudo journalctl --no-pager -n 30 -u 'minecadia-bot-*'; tail -5 data/*/vigilante.log
+          fi
           t0=$(date +%s); kicked=0; crashed=0; done=0
           for i in $(seq 1 150); do
             sleep 10
