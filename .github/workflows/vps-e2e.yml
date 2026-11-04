@@ -170,7 +170,7 @@ jobs:
           echo "=== logs del vigilante (lineas clave) ==="
           for r in orquestador runero sniper; do
             echo "-- $r"
-            if [ ${{ matrix.modo }} = docker ]; then docker compose --env-file config/bots.env logs --no-color $r; else cat data/$r/vigilante.log; fi | grep -aE "\[$r\]|\[PIPELINE\]|Exception|kicked" | grep -avE 'Fonts|discord' | cut -c1-260 | tail -120
+            if [ ${{ matrix.modo }} = docker ]; then docker compose --env-file config/bots.env logs --no-color $r; else cat data/$r/vigilante.log; fi | grep -aE "\[$r\]|\[PIPELINE\]|\[Sniper\]|no charge evidence|Exception|kicked" | grep -avE 'Fonts|discord' | cut -c1-260 | tail -120
           done
           ./bots.sh backup
           ./bots.sh parar
