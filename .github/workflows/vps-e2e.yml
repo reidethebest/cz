@@ -164,7 +164,11 @@ jobs:
             fi
             [ $(( i % 6 )) = 0 ] && echo "$now s: faltan ${left:-?} lineas"
           done
-          sleep 15
+          # si el set termino justo despues del crash, esperar a que el Runero vuelva a entrar (su inventario cuenta en check.py)
+          for i in $(seq 1 30); do
+            [ "$(grep -al '\[E2E\] step 1/' data/runero/logs/cliente-*.out 2>/dev/null | wc -l)" -ge 3 ] && break; sleep 10
+          done
+          sleep 45
           echo "=== bots.sh estado ==="; ./bots.sh estado
           echo "=== reinicios ==="; for r in orquestador runero sniper; do echo "-- $r"; cat data/$r/reinicios.log 2>/dev/null; done
           echo "=== logs del vigilante (lineas clave) ==="
