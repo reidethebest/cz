@@ -158,3 +158,14 @@ jobs:
 
       - name: Check results
         run: python3 tools/ChestNopeSim/e2e/check.py server/plugins/ChestNopeSim mc client1.log client2.log index_before.json
+
+      - name: Keep the client logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-logs
+          path: |
+            client1.log
+            client2.log
+          retention-days: 5
+          if-no-files-found: ignore
