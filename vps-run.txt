@@ -1,5 +1,5 @@
 claude/project-thread-zpir1p
-24038dc3569fc183d9a7f5a9a69d342892b058e1
+597c7db5e9f9bda71db031fda3b5ebcaa31f4368
 06efdc11f28996126c0e09b31498e501df8e63f6,b57eb12a8139cb051bd217cf1587b966cb7293c7,e39875c7026390b1f5e9f50fc63dc40732178ca4
 clon-leggings
-# run 20: pipeline 24038dc + ItemSniper b57eb12 (reemplaza la 19, que probaba 7d75238)
+# run 21: pipeline 597c7db (blend toma stacks) + ItemSniper b57eb12
