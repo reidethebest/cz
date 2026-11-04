@@ -1,5 +1,5 @@
 claude/project-thread-zpir1p
-7d75238ea53ebe3b4478e20ec77c0d8a7ad123f0
-06efdc11f28996126c0e09b31498e501df8e63f6,3ff8add48dc784b87d3bbba272d61f0eb188e886,e39875c7026390b1f5e9f50fc63dc40732178ca4
+24038dc3569fc183d9a7f5a9a69d342892b058e1
+06efdc11f28996126c0e09b31498e501df8e63f6,b57eb12a8139cb051bd217cf1587b966cb7293c7,e39875c7026390b1f5e9f50fc63dc40732178ca4
 clon-leggings
-# run 19: pipeline 7d75238 + ItemSniper 3ff8add; 50 min de juego (rosas al 25% pueden fallar en racha)
+# run 20: pipeline 24038dc + ItemSniper b57eb12 (reemplaza la 19, que probaba 7d75238)
