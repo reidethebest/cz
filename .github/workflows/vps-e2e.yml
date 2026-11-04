@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   e2e:
-    name: e2e ${{ matrix.modo }} (${{ matrix.runner }})
+    name: e2e ${{ matrix.modo }}${{ matrix.sin_systemd && ' sin systemd' || '' }} (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +31,7 @@ jobs:
           - { runner: ubuntu-24.04-arm, modo: docker }
           - { runner: ubuntu-latest, modo: docker }
           - { runner: ubuntu-24.04-arm, modo: nativo }
+          - { runner: ubuntu-latest, modo: nativo, sin_systemd: '1' }   # como Termux: sin systemd, procesos sueltos
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
     env:
@@ -116,6 +117,7 @@ jobs:
           done
           ESC=$(sed -n 4p ../../vps-run.txt | tr -d '[:space:]'); case "$ESC" in ''|\#*) T=target.tsv;; *) T=target-$ESC.tsv;; esac
           echo "objetivo: $T"; cp $E2E/$T config/objetivo.set
+          if [ "${{ matrix.sin_systemd }}" = 1 ]; then echo SIN_SYSTEMD=1 >> config/bots.env; fi
 
       - name: bots.sh instalar (builds the jar on this machine, Minecraft; docker or native)
         working-directory: deploy/vps
@@ -139,7 +141,7 @@ jobs:
         run: |
           set +e
           ./bots.sh arrancar
-          if [ ${{ matrix.modo }} = nativo ]; then
+          if [ ${{ matrix.modo }} = nativo ] && [ "${{ matrix.sin_systemd }}" != 1 ]; then
             sleep 30; for r in orquestador runero sniper; do systemctl status --no-pager minecadia-bot-$r | head -8; done
             sudo journalctl --no-pager -n 30 -u 'minecadia-bot-*'; tail -5 data/*/vigilante.log
           fi
