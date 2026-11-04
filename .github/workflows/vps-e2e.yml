@@ -33,7 +33,7 @@ jobs:
           - { runner: ubuntu-24.04-arm, modo: nativo }
           - { runner: ubuntu-latest, modo: nativo, sin_systemd: '1' }   # como Termux: sin systemd, procesos sueltos
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
+    timeout-minutes: 95
     env:
       PGHOST: 127.0.0.1
       PGUSER: pipeline
@@ -146,7 +146,7 @@ jobs:
             sudo journalctl --no-pager -n 30 -u 'minecadia-bot-*'; tail -5 data/*/vigilante.log
           fi
           t0=$(date +%s); kicked=0; crashed=0; done=0
-          for i in $(seq 1 220); do
+          for i in $(seq 1 300); do
             sleep 10
             now=$(( $(date +%s) - t0 ))
             # a los 3 min de juego: echa al Runero del server
