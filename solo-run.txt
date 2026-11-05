@@ -1,5 +1,5 @@
-b96f158d522599fdf0742b59d33d58655777ca8c
+747e720ee7be5ee1cba492c1efbcfae967e63d36
 
 PRIORITY
 
-# solo-e2e run 1: SoloBot PRIORITY, clon del arma (target.tsv)
+# solo-e2e run 3: SoloBot PRIORITY con 747e720 (inventario compartido sin runas de mas)
