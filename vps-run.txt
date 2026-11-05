@@ -1,5 +1,5 @@
 claude/project-thread-zpir1p
-597c7db5e9f9bda71db031fda3b5ebcaa31f4368
-06efdc11f28996126c0e09b31498e501df8e63f6,b57eb12a8139cb051bd217cf1587b966cb7293c7,e39875c7026390b1f5e9f50fc63dc40732178ca4
+c0ca4605f8b204b3544724600a73b12fec21386f
+06efdc11f28996126c0e09b31498e501df8e63f6,e61ad7bd6ca94c4e5285daeefa4c6e48a8269c1e,e39875c7026390b1f5e9f50fc63dc40732178ca4
 clon-leggings
-# run 21: pipeline 597c7db (blend toma stacks) + ItemSniper b57eb12
+# run 22: pipeline c0ca460 + ItemSniper e61ad7b
