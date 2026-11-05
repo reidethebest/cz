@@ -1,0 +1,236 @@
+name: solo-e2e
+
+# E2E de la version de UNA sola cuenta (PipelineBot con -Dminecadia.pipeline.role=solo): un solo cliente real corre los
+# tres cerebros (Orquestador, Runero y Sniper) sobre el mismo inventario contra Spigot 1.8.8 con MinecadiaEmu, con
+# Postgres como almacen. check.py compara la verdad del server con el almacen, igual que pipeline-e2e.
+# Codigo privado: se baja con MINECADIA_READ_TOKEN en el runner y no se sube nada.
+# solo-run.txt: 1ra linea = rama o sha de minecadia-client con el pipeline (y Solo.kt); 2da (opcional) = ramas o shas de
+# ChestZones, ItemSniper y AutoEnchant separadas por comas; 3ra (opcional) = politica PRIORITY|PHASED; 4ta (opcional) =
+# escenario del emulador (p.ej. clon-leggings); vacio = config-e2e.yml y target.tsv.
+
+on:
+  push:
+    paths: ["solo-run.txt", ".github/workflows/solo-e2e.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: solo-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pipeline
+          POSTGRES_PASSWORD: pipeline
+          POSTGRES_DB: pipeline
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pipeline" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: pipeline
+      PGPASSWORD: pipeline
+      PGDATABASE: pipeline
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch private sources (not committed)
+        env:
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          test -n "$TOKEN" || { echo "missing secret MINECADIA_READ_TOKEN"; exit 1; }
+          BASE=$(sed -n 1p solo-run.txt | tr -d '[:space:]')
+          MODS=$(sed -n 2p solo-run.txt | tr -d '[:space:]')
+          [ -n "$MODS" ] || MODS="chestzones-module,claude/itemsniper-sim,claude/autoenchant-sim"
+          H="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git init -q src && cd src
+          git config user.email e2e@local; git config user.name e2e
+          git -c http.extraheader="$H" fetch -q --no-tags https://github.com/reidethebest/minecadia-client.git "$BASE"
+          git -c advice.detachedHead=false checkout -q FETCH_HEAD
+          git log --oneline -1
+          i=0
+          for m in $(echo "$MODS" | tr ',' ' '); do
+            i=$((i+1))
+            git -c http.extraheader="$H" fetch -q --no-tags https://github.com/reidethebest/minecadia-client.git "$m"
+            git log --oneline -1 FETCH_HEAD
+            if ! git merge -q --no-edit FETCH_HEAD >/dev/null 2>&1; then
+              bad=$(git diff --name-only --diff-filter=U | grep -E '^(minecadia|pipeline|tools/MinecadiaEmu)/' || true)
+              if [ -n "$bad" ]; then echo "conflicto en codigo al mezclar $m:"; echo "$bad"; exit 1; fi
+              git checkout -q --theirs -- $(git diff --name-only --diff-filter=U); git add -A; git commit -q --no-edit
+            fi
+          done
+          cd .. && mv src/minecadia src/pipeline . && mkdir -p tools && rm -rf tools/MinecadiaEmu && mv src/tools/MinecadiaEmu tools/ && rm -rf src
+          SCEN=$(sed -n 4p solo-run.txt | tr -d '[:space:]')
+          E2E=tools/MinecadiaEmu/e2e
+          if [ -n "$SCEN" ]; then CONF=$E2E/config-$SCEN.yml; TARGET=$E2E/target-$SCEN.tsv; else CONF=$E2E/config-e2e.yml; TARGET=$E2E/target.tsv; fi
+          # una sola cuenta: la plata y las recargas del Sniper van a la cuenta Solo
+          sed -E 's/^(\s+)Sniper:/\1Solo:/; s/players: \[Sniper\]/players: [Solo]/' "$CONF" > $E2E/config-solo.yml
+          grep -nE "Solo" $E2E/config-solo.yml
+          cp "$TARGET" $E2E/target-solo.tsv
+          POL=$(sed -n 3p solo-run.txt | tr -d '[:space:]')
+          [ -n "$POL" ] && echo "#!config solo.policy=$POL" >> $E2E/target-solo.tsv
+          tail -3 $E2E/target-solo.tsv
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Restore Spigot 1.8.8
+        id: spigot
+        uses: actions/cache/restore@v4
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
+
+      - name: Restore Minecraft + Forge 1.8.9
+        id: mc
+        uses: actions/cache/restore@v4
+        with:
+          path: mc
+          key: mc-forge-1.8.9-v1
+
+      # mientras compila el cliente: Spigot, plugin, server y la instalacion de los clientes en paralelo
+      - name: Start server and install clients (background)
+        run: |
+          cat > prep.sh <<'PREP'
+          set -e
+          if [ ! -f spigot/spigot-1.8.8.jar ]; then
+            mkdir -p bt spigot; cd bt
+            curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar
+            java -jar BuildTools.jar --rev 1.8.8 > buildtools.log 2>&1 || (tail -50 buildtools.log; exit 1)
+            cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar; cd ..
+          fi
+          (cd tools/MinecadiaEmu && mkdir -p out && javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java && jar cf MinecadiaEmu.jar -C out . -C src/main/resources .)
+          mkdir -p server/plugins/MinecadiaEmu
+          cp spigot/spigot-1.8.8.jar server/
+          cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
+          cp tools/MinecadiaEmu/e2e/config-solo.yml server/plugins/MinecadiaEmu/config.yml
+          cd server
+          echo "eula=true" > eula.txt
+          printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\nmax-players=10\nmotd=solo-e2e\n' > server.properties
+          nohup java -Xmx1G -jar spigot-1.8.8.jar nogui > server.log 2>&1 &
+          cd ..
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libgl1-mesa-dri libglx-mesa0 x11-xserver-utils libxrandr2 libxcursor1 libxxf86vm1 libxtst6 postgresql-client > /dev/null
+          pip install -q portablemc
+          portablemc start --main-dir "$PWD/mc" --dry forge:1.8.9 > portablemc.log 2>&1
+          echo PREP_OK
+          PREP
+          nohup bash prep.sh > prep.log 2>&1 &
+
+      - name: Build client jar
+        working-directory: minecadia
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon reobfShadowJar
+          ls -la build/libs
+
+      # tests de los modulos que usa el pipeline (pedido del hilo de AutoEnchant); no frenan el E2E
+      - name: Module tests
+        id: tests
+        continue-on-error: true
+        working-directory: minecadia
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --continue test --tests '*autoenchant*' --tests '*itemsniper*' --tests '*chestzones*' 2>&1 | tee tests.log
+
+      - name: Module test failures
+        if: steps.tests.outcome == 'failure'
+        working-directory: minecadia
+        run: |
+          grep -E "^e: |FAILED" tests.log | cut -c1-400 | head -40 || true
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for f in glob.glob("build/test-results/test/*.xml"):
+              for tc in ET.parse(f).getroot().iter("testcase"):
+                  for bad in list(tc.findall("failure")) + list(tc.findall("error")):
+                      print("FAIL", tc.get("classname"), tc.get("name"), "-", (bad.get("message") or "")[:300])
+          PY
+
+      - name: Wait for server and clients
+        run: |
+          for i in $(seq 1 180); do grep -q "PREP_OK" prep.log && break; sleep 5; done
+          tail -20 prep.log; grep -q PREP_OK prep.log
+          for i in $(seq 1 60); do grep -q "Done (" server/server.log && break; sleep 2; done
+          tail -3 server/server.log
+          rm -rf mc/mods
+
+      # se guardan aunque la prueba falle despues (sin nada privado: solo Spigot y Minecraft/Forge vanilla)
+      - name: Save Spigot cache
+        if: steps.spigot.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
+
+      - name: Save Minecraft cache
+        if: steps.mc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: mc
+          key: mc-forge-1.8.9-v1
+
+      # el jar del cliente (privado) entra recien despues de guardar el cache, para que nunca quede en el cache
+      - name: Install client mod
+        run: |
+          mkdir -p mc/mods
+          JAR=$(ls -S minecadia/build/libs/*.jar | grep -v sources | head -1)
+          echo "mod jar: $JAR"
+          cp "$JAR" mc/mods/
+
+      - name: Run 1 client (solo)
+        run: |
+          set +e
+          E2E=$PWD/tools/MinecadiaEmu/e2e
+          run_client() { # dir user role
+            xvfb-run -a -s "-screen 0 854x480x24" portablemc start --main-dir "$PWD/$1" -u "$2" --jvm-arg=-Xmx1G \
+              --jvm-arg=-Dminecadia.e2e.server=127.0.0.1 "--jvm-arg=-Dminecadia.e2e.script=$E2E/orquestador.txt" \
+              --jvm-arg=-Dminecadia.pipeline.role=$3 --jvm-arg=-Dminecadia.pipeline.pg=jdbc:postgresql://127.0.0.1:5432/pipeline \
+              --jvm-arg=-Dminecadia.pipeline.user=pipeline --jvm-arg=-Dminecadia.pipeline.pass=pipeline \
+              "--jvm-arg=-Dminecadia.pipeline.target=$E2E/target-solo.tsv" forge:1.8.9 > "client-$3.out" 2>&1
+          }
+          run_client mc Solo solo & P1=$!
+          # como mucho 40 min de juego; corta antes si el BOM quedo aplicado entero
+          for i in $(seq 1 240); do
+            sleep 10
+            left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
+            if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom')" != "0" ]; then echo "BOM completo a los $((i*10)) s"; break; fi
+          done
+          sleep 10
+          kill $P1 2>/dev/null; sleep 10
+          for r in solo; do
+            echo "=== $r: key lines ==="
+            grep -aE "\[PIPELINE\]|\[E2E\]|\[CHAT\]|ItemSniper|AutoEnchant|ChestZones|Exception|FATAL|Disconnect|kicked" "client-$r.out" \
+              | grep -avE "Fonts|MalformedURL|discord-ipc|AFUNIXSocket" | cut -c1-300 | head -1500
+          done
+          echo "=== emulator events (sin altas/vencimientos del mercado) ==="
+          grep -vE "^[0-9]+ (list|expire) " server/plugins/MinecadiaEmu/events.log | tail -200
+          echo "=== store ==="
+          psql -c "select spec_key, required, applied from bom"
+          psql -c "select id, claim_id, item_key, qty, unit_price, status from purchase order by id"
+          psql -c "select type, count(*) from event group by type order by 2 desc"
+          psql -c "select id, spec_key, qty, urgent, open from claim order by id"
+          psql -c "select id, spec_key, qty, made, state, waiting_on from rune_order order by id"
+          psql -c "select bot, type, left(detail, 120) as detail from event order by id desc limit 40"
+          psql -c "select location, left(contents::text, 160) as contents from snapshot" || true
+
+      - name: Check
+        run: |
+          # el dump final lo escribe el plugin al apagarse
+          pkill -f spigot-1.8.8.jar
+          for i in $(seq 1 60); do pgrep -f spigot-1.8.8.jar >/dev/null || break; sleep 2; done
+          ls server/plugins/MinecadiaEmu/ || true
+          test -f server/plugins/MinecadiaEmu/final.json || tail -30 server/server.log
+          E2E_ORCH=Solo E2E_BUYER=Solo E2E_CLIENTS=solo python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu tools/MinecadiaEmu/e2e/target-solo.tsv

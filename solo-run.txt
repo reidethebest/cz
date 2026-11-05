@@ -1,0 +1,5 @@
+b96f158
+
+PRIORITY
+
+# solo-e2e run 1: SoloBot PRIORITY, clon del arma (target.tsv)
