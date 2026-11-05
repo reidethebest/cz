@@ -1,0 +1,265 @@
+name: afk-actions
+
+# El bot de UNA cuenta (rol solo) corriendo en GitHub Actions contra el server real, en tandas.
+# Cada tanda: arma el kit de deploy/vps (minecadia-client, privado: se baja con MINECADIA_READ_TOKEN y nunca se sube),
+# recupera el estado cifrado de la tanda anterior (almacen Postgres, login Microsoft, logs), corre el bot unas horas,
+# lo apaga con las compras cerradas, guarda el estado cifrado y lanza la tanda siguiente.
+#
+# Modos (Actions > afk-actions > Run workflow):
+#   login   muestra el codigo de microsoft.com/link; entras con la cuenta del bot una sola vez y queda guardado
+#   correr  corre el bot; si la variable AFK_ON es 1, al terminar la tanda lanza la siguiente sola
+#   prueba  lo mismo contra el emulador (sin secrets del server): corta a mitad, guarda, borra todo, recupera y sigue
+#
+# Secrets (Settings > Secrets and variables > Actions):
+#   MINECADIA_READ_TOKEN  token de solo lectura de minecadia-client (ya esta)
+#   AFK_CLAVE             una frase larga cualquiera: cifra el estado guardado entre tandas
+#   AFK_SERVER            direccion del server (ej. play.minecadia.com)
+#   AFK_INICIO            el inicio.txt: ir a la base y las 5 zonas de cofres (;cz ...), ;cz pipeline on, ;toggle PipelineBot on
+#   AFK_OBJETIVO          el set (objetivo .set), con #!config budget.cap=... y topes price.*
+# Variable: AFK_ON = 1 para que siga solo tanda tras tanda; 0 (o borrarla) para que pare al terminar la tanda actual.
+#
+# En este repo los logs son publicos: aca solo se imprime un resumen (progreso del set, compras, plata),
+# nunca la config, las coordenadas ni los logs del juego (van dentro del estado cifrado).
+
+on:
+  push:   # un push a afk-run.txt o a este archivo corre el modo prueba (nunca el server real)
+    paths: ["afk-run.txt", "afk-guardar.sh", "afk-resumen.sh", ".github/workflows/afk-actions.yml"]
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: login, correr o prueba
+        default: correr
+        type: choice
+        options: [correr, login, prueba]
+      horas:
+        description: horas de juego en esta tanda (maximo 5.5)
+        default: '5.5'
+
+concurrency:
+  group: afk-actions-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write   # para lanzar la tanda siguiente
+
+jobs:
+  tanda:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      MODO_AFK: ${{ inputs.modo || (github.event_name == 'push' && 'prueba') || 'correr' }}
+      PGHOST: 127.0.0.1
+      PGUSER: pipeline
+      PGPASSWORD: pipeline
+      PGDATABASE: pipeline
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kit (privado, no se guarda)
+        env:
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          test -n "$TOKEN" || { echo "falta el secret MINECADIA_READ_TOKEN"; exit 1; }
+          KIT=$(sed -n 1p afk-run.txt | tr -d '[:space:]'); BASE=$(sed -n 2p afk-run.txt | tr -d '[:space:]')
+          H="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git init -q /tmp/src
+          git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$KIT"
+          git -C /tmp/src log -1 --format='kit %h' FETCH_HEAD
+          git -C /tmp/src archive FETCH_HEAD deploy/vps | tar x
+          if [ "$MODO_AFK" = prueba ]; then
+            git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$BASE"
+            git -C /tmp/src archive FETCH_HEAD tools/MinecadiaEmu | tar x
+          fi
+          rm -rf /tmp/src
+
+      - name: Config (de los secrets; nada se imprime)
+        working-directory: deploy/vps
+        env:
+          S_SERVER: ${{ secrets.AFK_SERVER }}
+          S_INICIO: ${{ secrets.AFK_INICIO }}
+          S_OBJETIVO: ${{ secrets.AFK_OBJETIVO }}
+          S_CLAVE: ${{ secrets.AFK_CLAVE }}
+        run: |
+          umask 077
+          cp config/bots.env.example config/bots.env
+          BASE=$(sed -n 2p ../../afk-run.txt | tr -d '[:space:]'); MOD=$(sed -n 3p ../../afk-run.txt | tr -d '[:space:]')
+          sed -i -e 's/^MODO=.*/MODO=nativo/' -e 's/^UNA_CUENTA=.*/UNA_CUENTA=1/' -e 's/^PG_PASS=.*/PG_PASS=pipeline/' \
+            -e 's/^RAM=.*/RAM=2048m/' -e "s#^RAMA_BASE=.*#RAMA_BASE=$BASE#" config/bots.env
+          [ -n "$MOD" ] && sed -i "s#^RAMAS_MODULOS=.*#RAMAS_MODULOS=$MOD#" config/bots.env
+          echo SIN_SYSTEMD=1 >> config/bots.env
+          if [ "$MODO_AFK" = prueba ]; then
+            E2E=../../tools/MinecadiaEmu/e2e
+            sed -i -e 's/^SERVER=.*/SERVER=127.0.0.1/' -e 's/^AUTH=.*/AUTH=offline/' -e 's/^CUENTA_SOLO=.*/CUENTA_SOLO=Solo/' \
+              -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' config/bots.env
+            grep -vE '^(quit|chat /emu dump|wait (60000|100)$)' $E2E/orquestador.txt | sed 's/^cmd ;toggle PipelineBot$/cmd ;toggle PipelineBot on/' > config/inicio.txt
+            cp $E2E/target-clon-leggings.tsv config/objetivo.set
+            echo "AFK_CLAVE=${S_CLAVE:-prueba-sin-clave}" > ../../.clave
+          else
+            for v in S_SERVER S_INICIO S_OBJETIVO S_CLAVE; do [ -n "${!v}" ] || { echo "falta el secret ${v/S_/AFK_}"; exit 1; }; done
+            sed -i "s#^SERVER=.*#SERVER=$S_SERVER#" config/bots.env
+            printf '%s\n' "$S_INICIO" > config/inicio.txt
+            printf '%s\n' "$S_OBJETIVO" > config/objetivo.set
+            echo "AFK_CLAVE=$S_CLAVE" > ../../.clave
+          fi
+          echo "config lista: $(wc -l < config/inicio.txt) lineas de inicio, $(grep -cvE '^\s*(#|$)' config/objetivo.set) lineas de objetivo"
+
+      - name: Restaurar Minecraft (vanilla, sin nada privado)
+        uses: actions/cache/restore@v4
+        with:
+          path: deploy/vps/data/shared
+          key: afk-mc-forge-1.8.9-v1
+
+      - name: Restaurar el estado de la tanda anterior (cifrado)
+        uses: actions/cache/restore@v4
+        with:
+          path: estado.enc
+          key: afk-estado-${{ env.MODO_AFK == 'prueba' && 'prueba' || 'real' }}-${{ github.run_id }}
+          restore-keys: afk-estado-${{ env.MODO_AFK == 'prueba' && 'prueba' || 'real' }}-
+
+      - name: Instalar (Java, Postgres, jar, Minecraft)
+        working-directory: deploy/vps
+        env:
+          GITHUB_TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          start=$(date +%s)
+          ./instalar-nativo.sh > ../../instalar.log 2>&1 || { tail -30 ../../instalar.log; exit 1; }
+          ./bots.sh instalar > ../../instalar2.log 2>&1 || { tail -30 ../../instalar2.log | grep -v -i token; exit 1; }
+          test -s data/mod/minecadia.jar
+          echo "instalado en $(( $(date +%s) - start )) s"
+
+      - name: Guardar Minecraft para la proxima tanda
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: deploy/vps/data/shared
+          key: afk-mc-forge-1.8.9-v1
+
+      - name: Recuperar el estado (almacen, login, logs)
+        working-directory: deploy/vps
+        run: |
+          . ../../.clave
+          if [ -s ../../estado.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AFK_CLAVE -in ../../estado.enc | tar xz
+            [ -s estado/almacen.sql ] && psql -q -v ON_ERROR_STOP=0 -f estado/almacen.sql > /dev/null 2>&1
+            mkdir -p data/solo; cp -a estado/solo/. data/solo/ 2>/dev/null || true
+            cp estado/tanda ../../tanda-anterior 2>/dev/null || true
+            echo "estado recuperado: tanda $(cat estado/tanda 2>/dev/null || echo ?), $(psql -At -c 'select count(*) from bom' 2>/dev/null || echo 0) lineas de set"
+            rm -rf estado
+          else
+            echo "sin estado anterior: arranca de cero"
+          fi
+          bash ../../afk-resumen.sh || true
+
+      - name: JDK 8 para el emulador
+        if: env.MODO_AFK == 'prueba'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Restaurar Spigot 1.8.8
+        if: env.MODO_AFK == 'prueba'
+        uses: actions/cache/restore@v4
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
+
+      - name: Server de prueba (emulador)
+        if: env.MODO_AFK == 'prueba'
+        run: |
+          J8=$JAVA_HOME/bin
+          mkdir -p spigot bt
+          if [ ! -f spigot/spigot-1.8.8.jar ]; then (cd bt && curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar && $J8/java -jar BuildTools.jar --rev 1.8.8 > bt.log 2>&1 && cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar); fi
+          (cd tools/MinecadiaEmu && mkdir -p out && $J8/javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java && $J8/jar cf MinecadiaEmu.jar -C out . -C src/main/resources .)
+          mkdir -p server/plugins/MinecadiaEmu; cp spigot/spigot-1.8.8.jar server/; cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
+          E2E=tools/MinecadiaEmu/e2e
+          sed -E 's/^(\s+)Sniper:/\1Solo:/; s/players: \[Sniper\]/players: [Solo]/' $E2E/config-clon-leggings.yml > server/plugins/MinecadiaEmu/config.yml
+          cd server; echo "eula=true" > eula.txt
+          printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\nmax-players=10\n' > server.properties
+          mkfifo console; nohup sleep infinity > console 2>/dev/null &
+          nohup $J8/java -Xmx1G -jar spigot-1.8.8.jar nogui < console > server.log 2>&1 &
+          for i in $(seq 1 120); do grep -q "Done (" server.log && break; sleep 5; done; grep -q "Done (" server.log && echo "emulador listo"
+
+      - name: Login Microsoft (una vez)
+        if: env.MODO_AFK == 'login'
+        working-directory: deploy/vps
+        run: |
+          echo "Abri https://www.microsoft.com/link y escribi el codigo de abajo (entra con la cuenta del bot):"
+          timeout 900 ./bots.sh login solo 2>&1 | grep -iE "code|codigo|link|guardada|error" | grep -viE "token|refresh"
+          test -s data/solo/msa.json && echo "login guardado"
+
+      - name: Correr el bot
+        if: env.MODO_AFK != 'login'
+        working-directory: deploy/vps
+        run: |
+          set +e
+          HORAS='${{ inputs.horas || '5.5' }}'
+          if [ "$MODO_AFK" = prueba ]; then HORAS=0.12; fi
+          LIMITE=$(python3 -c "print(int(min(float('$HORAS'), 5.5) * 3600))")
+          ./bots.sh revisar | grep -E "FALTA|AVISO|ok" || true
+          ./bots.sh arrancar > /dev/null 2>&1 || { echo "no arranco: ./bots.sh revisar marco algo (mira arriba)"; exit 1; }
+          echo "bot prendido por $LIMITE s"
+          t0=$(date +%s)
+          while true; do
+            sleep 60; now=$(( $(date +%s) - t0 ))
+            [ $(( now % 900 )) -lt 60 ] && bash ../../afk-resumen.sh
+            left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
+            if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom' 2>/dev/null)" != "0" ]; then echo "set completo a los $now s"; touch ../../set-completo; break; fi
+            [ $now -ge $LIMITE ] && { echo "fin de la tanda ($now s)"; break; }
+          done
+          bash ../../afk-resumen.sh
+
+      - name: Prueba - corte de tanda (guarda, borra todo, recupera y sigue)
+        if: env.MODO_AFK == 'prueba'
+        working-directory: deploy/vps
+        run: |
+          set +e
+          . ../../.clave
+          ./bots.sh parar > /dev/null 2>&1
+          bash ../../afk-guardar.sh ../../estado.enc
+          psql -q -c "drop schema public cascade; create schema public;" ; rm -rf data/solo
+          echo "borrado: $(psql -At -c 'select count(*) from information_schema.tables where table_schema=$$public$$') tablas, data/solo $(ls data/solo 2>/dev/null | wc -l) archivos"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AFK_CLAVE -in ../../estado.enc | tar xz
+          psql -q -f estado/almacen.sql > /dev/null 2>&1; mkdir -p data/solo; cp -a estado/solo/. data/solo/; rm -rf estado
+          echo "recuperado:"; bash ../../afk-resumen.sh
+          ./bots.sh arrancar > /dev/null 2>&1 || exit 1
+          t0=$(date +%s)
+          for i in $(seq 1 300); do
+            sleep 10
+            left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
+            if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom')" != "0" ]; then echo "set completo $(( $(date +%s) - t0 )) s despues del corte"; touch ../../set-completo; break; fi
+          done
+          sleep 30
+          bash ../../afk-resumen.sh
+
+      - name: Apagar con las compras cerradas y guardar el estado (cifrado)
+        if: always() && env.MODO_AFK != 'prueba'
+        working-directory: deploy/vps
+        run: |
+          . ../../.clave
+          [ -x bots.sh ] || exit 0
+          ./bots.sh parar > /dev/null 2>&1 || true
+          bash ../../afk-guardar.sh ../../estado.enc
+
+      - name: Guardar el estado para la tanda siguiente
+        if: always() && env.MODO_AFK != 'prueba' && hashFiles('estado.enc') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: estado.enc
+          key: afk-estado-real-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Prueba - chequeo del emulador
+        if: env.MODO_AFK == 'prueba'
+        run: |
+          echo stop > server/console; for i in $(seq 1 60); do pgrep -f spigot-1.8.8.jar >/dev/null || break; sleep 2; done
+          test -f set-completo || { echo "FALLA: el set no se completo"; exit 1; }
+          E2E_ORCH=Solo E2E_BUYER=Solo E2E_CLIENTS=solo python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu deploy/vps/config/objetivo.set
+
+      - name: Lanzar la tanda siguiente
+        if: always() && env.MODO_AFK == 'correr' && vars.AFK_ON == '1' && hashFiles('set-completo') == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run afk-actions.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f modo=correr -f horas='${{ inputs.horas || '5.5' }}'
+          echo "tanda siguiente lanzada (arranca cuando termine esta)"

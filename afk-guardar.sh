@@ -1,0 +1,15 @@
+#!/bin/bash
+# Guarda el estado del bot de una cuenta, cifrado con AFK_CLAVE: almacen (pg_dump), login Microsoft y logs recientes.
+# Uso (desde deploy/vps): bash ../../afk-guardar.sh <salida.enc>
+set -u
+out=$1
+: "${AFK_CLAVE:?falta AFK_CLAVE}"
+rm -rf estado; mkdir -p estado/solo/logs-anteriores
+pg_dump --clean --if-exists --no-owner --no-privileges > estado/almacen.sql 2>/dev/null || echo "aviso: no se pudo volcar el almacen"
+for f in msa.json cuenta reinicios.log; do [ -f data/solo/$f ] && cp data/solo/$f estado/solo/; done
+[ -f data/solo/vigilante.log ] && tail -n 5000 data/solo/vigilante.log > estado/solo/vigilante.log
+c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1); [ -n "$c" ] && tail -n 4000 "$c" > estado/solo/logs-anteriores/ultimo-cliente.out
+echo $(( $(cat ../../tanda-anterior 2>/dev/null || echo 0) + 1 )) > estado/tanda
+tar cz estado | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AFK_CLAVE -out "$out"
+echo "estado guardado: tanda $(cat estado/tanda), $(du -h "$out" | cut -f1) cifrado, login $( [ -s estado/solo/msa.json ] && echo si || echo NO)"
+rm -rf estado
