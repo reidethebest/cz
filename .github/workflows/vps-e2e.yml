@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   e2e:
-    name: e2e ${{ matrix.modo }}${{ matrix.sin_systemd && ' sin systemd' || '' }} (${{ matrix.runner }})${{ matrix.rep && format(' #{0}', matrix.rep) || '' }}
+    name: e2e ${{ matrix.modo }}${{ matrix.sin_systemd && ' sin systemd' || '' }} (${{ matrix.runner }}) ${{ matrix.rep }}
     strategy:
       fail-fast: false
       matrix:
