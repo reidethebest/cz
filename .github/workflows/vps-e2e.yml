@@ -23,18 +23,15 @@ concurrency:
 
 jobs:
   e2e:
-    name: e2e ${{ matrix.modo }}${{ matrix.sin_systemd && ' sin systemd' || '' }} (${{ matrix.runner }}) ${{ matrix.rep }}
+    name: e2e ${{ matrix.modo }}${{ matrix.sin_systemd && ' sin systemd' || '' }} (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          # DIAG temporal (corrida 24): 3 veces Docker ARM con mas diagnostico para el hilo del pipeline
-          - { runner: ubuntu-24.04-arm, modo: docker, rep: 1 }
-          - { runner: ubuntu-24.04-arm, modo: docker, rep: 2 }
-          - { runner: ubuntu-24.04-arm, modo: docker, rep: 3 }
-          # - { runner: ubuntu-latest, modo: docker }
-          # - { runner: ubuntu-24.04-arm, modo: nativo }
-          # - { runner: ubuntu-latest, modo: nativo, sin_systemd: '1' }   # como Termux: sin systemd, procesos sueltos
+          - { runner: ubuntu-24.04-arm, modo: docker }
+          - { runner: ubuntu-latest, modo: docker }
+          - { runner: ubuntu-24.04-arm, modo: nativo }
+          - { runner: ubuntu-latest, modo: nativo, sin_systemd: '1' }   # como Termux: sin systemd, procesos sueltos
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 95
     env:
