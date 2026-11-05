@@ -1,6 +1,6 @@
-c9aaa7fe3b9f0127308dc77627b40410eff437c7
+b0e4c84bc1c7b8f42b9b7d28e90e39aacdbb2f48
 
-PHASED
+PRIORITY
 
-solo.order=ENCANTAR,COMPRAR,BOTELLAS
-# solo-e2e run 5: por fases con orden elegido por el usuario (Encantar > Comprar > Botellas), mod con .solo y pantalla
+
+# solo-e2e run 6: PRIORITY (la de esta noche) con candado de White Scroll en el cuerpo y b2da3e6
