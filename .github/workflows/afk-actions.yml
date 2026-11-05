@@ -34,6 +34,10 @@ on:
       horas:
         description: horas de juego en esta tanda (maximo 5.5)
         default: '5.5'
+      set_nuevo:
+        description: empezar un set nuevo (borra el progreso guardado del set; el login queda)
+        type: boolean
+        default: false
 
 concurrency:
   group: afk-actions-${{ github.ref }}
@@ -141,7 +145,8 @@ jobs:
           . ../../.clave
           if [ -s ../../estado.enc ]; then
             openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AFK_CLAVE -in ../../estado.enc | tar xz
-            [ -s estado/almacen.sql ] && psql -q -v ON_ERROR_STOP=0 -f estado/almacen.sql > /dev/null 2>&1
+            if [ "${{ inputs.set_nuevo }}" = true ]; then echo "set nuevo: no recupero el almacen (se carga AFK_OBJETIVO de cero)"
+            elif [ -s estado/almacen.sql ]; then psql -q -v ON_ERROR_STOP=0 -f estado/almacen.sql > /dev/null 2>&1; fi
             mkdir -p data/solo; cp -a estado/solo/. data/solo/ 2>/dev/null || true
             cp estado/tanda ../../tanda-anterior 2>/dev/null || true
             echo "estado recuperado: tanda $(cat estado/tanda 2>/dev/null || echo ?), $(psql -At -c 'select count(*) from bom' 2>/dev/null || echo 0) lineas de set"
