@@ -205,7 +205,9 @@ jobs:
           }
           run_client mc Solo solo & P1=$!
           # como mucho 40 min de juego; corta antes si el BOM quedo aplicado entero
-          for i in $(seq 1 240); do
+          # linea 6 (opcional): minutos de juego (default 40)
+          MIN=$(sed -n 6p solo-run.txt | tr -dc '0-9'); [ -n "$MIN" ] || MIN=40
+          for i in $(seq 1 $((MIN*6))); do
             sleep 10
             left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
             if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom')" != "0" ]; then echo "BOM completo a los $((i*10)) s"; break; fi

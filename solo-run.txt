@@ -1,6 +1,7 @@
-b0e4c84bc1c7b8f42b9b7d28e90e39aacdbb2f48
+0b869548a2a5fda7717c91136b2b9330a5d163d6
 
 PRIORITY
 
-
-# solo-e2e run 6: PRIORITY (la de esta noche) con candado de White Scroll en el cuerpo y b2da3e6
+solo.order=COMPRAR
+15
+# solo-e2e run 7: SOLO COMPRAR (lo de esta noche): compra todo lo del AH, no encanta ni abre botellas. El check va a marcar el set incompleto: es lo esperado; se mira el dump.
