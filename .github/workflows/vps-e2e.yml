@@ -23,15 +23,18 @@ concurrency:
 
 jobs:
   e2e:
-    name: e2e ${{ matrix.modo }}${{ matrix.sin_systemd && ' sin systemd' || '' }} (${{ matrix.runner }})
+    name: e2e ${{ matrix.modo }}${{ matrix.sin_systemd && ' sin systemd' || '' }} (${{ matrix.runner }})${{ matrix.rep && format(' #{0}', matrix.rep) || '' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { runner: ubuntu-24.04-arm, modo: docker }
-          - { runner: ubuntu-latest, modo: docker }
-          - { runner: ubuntu-24.04-arm, modo: nativo }
-          - { runner: ubuntu-latest, modo: nativo, sin_systemd: '1' }   # como Termux: sin systemd, procesos sueltos
+          # DIAG temporal (corrida 24): 3 veces Docker ARM con mas diagnostico para el hilo del pipeline
+          - { runner: ubuntu-24.04-arm, modo: docker, rep: 1 }
+          - { runner: ubuntu-24.04-arm, modo: docker, rep: 2 }
+          - { runner: ubuntu-24.04-arm, modo: docker, rep: 3 }
+          # - { runner: ubuntu-latest, modo: docker }
+          # - { runner: ubuntu-24.04-arm, modo: nativo }
+          # - { runner: ubuntu-latest, modo: nativo, sin_systemd: '1' }   # como Termux: sin systemd, procesos sueltos
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 95
     env:
@@ -176,13 +179,17 @@ jobs:
           echo "=== logs del vigilante (lineas clave) ==="
           for r in orquestador runero sniper; do
             echo "-- $r"
-            if [ ${{ matrix.modo }} = docker ]; then docker compose --env-file config/bots.env logs --no-color $r; else cat data/$r/vigilante.log; fi | grep -aE "\[$r\]|\[PIPELINE\]|\[Sniper\]|no charge evidence|no balance reading|Exception|kicked" | grep -avE 'Fonts|discord' | cut -c1-260 | tail -120
+            if [ ${{ matrix.modo }} = docker ]; then docker compose --env-file config/bots.env logs --no-color $r; else cat data/$r/vigilante.log; fi | grep -aE "\[$r\]|\[PIPELINE\]|\[Sniper\]|no charge evidence|no balance reading|Exception|kicked" | grep -avE 'Fonts|discord' | if [ $r = orquestador ]; then cat; else cut -c1-260; fi | tail -600
           done
           ./bots.sh backup
           ./bots.sh parar
           echo "=== store ==="
           psql -c "select spec_key, required, applied from bom"
           psql -c "select id, claim_id, item_key, qty, unit_price, status from purchase order by id"
+          echo "=== eventos (sin TRANSFER/REPORT/HEARTBEAT) ==="
+          psql -c "select at, bot, type, detail from event where type not in ('TRANSFER','REPORT','HEARTBEAT') order by at" || true
+          echo "=== drops en events.log del emulador ==="
+          grep -n -B15 -A15 ' drop ' ../../server/plugins/MinecadiaEmu/events.log || echo "(sin drops)"
           echo "done=$done kicked=$kicked crashed=$crashed" > ../../result.txt
 
       - name: Check
@@ -199,5 +206,6 @@ jobs:
           n=$(grep -al '\[E2E\] step 1/' deploy/vps/data/runero/logs/cliente-*.out | wc -l)
           echo "runero entro al server $n veces"; [ "$n" -ge 3 ] || { echo "FALLA: el Runero no volvio a entrar las 2 veces"; ok=0; }
           ls deploy/vps/data/backups/
+          echo "=== drops en events.log (despues del stop) ==="; grep -n -B15 -A15 ' drop ' server/plugins/MinecadiaEmu/events.log || echo "(sin drops; archivos: $(ls server/plugins/MinecadiaEmu | tr '\n' ' '))"
           python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu deploy/vps/config/objetivo.set || ok=0
           [ $ok = 1 ]
