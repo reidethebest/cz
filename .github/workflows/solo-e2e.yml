@@ -79,6 +79,8 @@ jobs:
           cp "$TARGET" $E2E/target-solo.tsv
           POL=$(sed -n 3p solo-run.txt | tr -d '[:space:]')
           [ -n "$POL" ] && echo "#!config solo.policy=$POL" >> $E2E/target-solo.tsv
+          # linea 5 (opcional): mas config para el objetivo, separada por espacios (p. ej. solo.order=ENCANTAR,COMPRAR,BOTELLAS)
+          for kv in $(sed -n 5p solo-run.txt); do echo "#!config $kv" >> $E2E/target-solo.tsv; done
           tail -3 $E2E/target-solo.tsv
 
       - name: Set up JDK 8

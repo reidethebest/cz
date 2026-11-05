@@ -1,5 +1,6 @@
-747e720ee7be5ee1cba492c1efbcfae967e63d36
+c9aaa7fe3b9f0127308dc77627b40410eff437c7
 
 PHASED
 
-# solo-e2e run 3: SoloBot PRIORITY con 747e720 (inventario compartido sin runas de mas)
+solo.order=ENCANTAR,COMPRAR,BOTELLAS
+# solo-e2e run 5: por fases con orden elegido por el usuario (Encantar > Comprar > Botellas), mod con .solo y pantalla
