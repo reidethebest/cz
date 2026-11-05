@@ -94,13 +94,13 @@ jobs:
               -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' config/bots.env
             grep -vE '^(quit|chat /emu dump|wait (60000|100)$)' $E2E/orquestador.txt | sed 's/^cmd ;toggle PipelineBot$/cmd ;toggle PipelineBot on/' > config/inicio.txt
             cp $E2E/target-clon-leggings.tsv config/objetivo.set
-            echo "AFK_CLAVE=${S_CLAVE:-prueba-sin-clave}" > ../../.clave
+            echo "export AFK_CLAVE=${S_CLAVE:-prueba-sin-clave}" > ../../.clave
           else
             for v in S_SERVER S_INICIO S_OBJETIVO S_CLAVE; do [ -n "${!v}" ] || { echo "falta el secret ${v/S_/AFK_}"; exit 1; }; done
             sed -i "s#^SERVER=.*#SERVER=$S_SERVER#" config/bots.env
             printf '%s\n' "$S_INICIO" > config/inicio.txt
             printf '%s\n' "$S_OBJETIVO" > config/objetivo.set
-            echo "AFK_CLAVE=$S_CLAVE" > ../../.clave
+            echo "export AFK_CLAVE=$S_CLAVE" > ../../.clave
           fi
           echo "config lista: $(wc -l < config/inicio.txt) lineas de inicio, $(grep -cvE '^\s*(#|$)' config/objetivo.set) lineas de objetivo"
 
@@ -217,12 +217,15 @@ jobs:
           set +e
           . ../../.clave
           ./bots.sh parar > /dev/null 2>&1
-          bash ../../afk-guardar.sh ../../estado.enc
-          psql -q -c "drop schema public cascade; create schema public;" ; rm -rf data/solo
+          bash ../../afk-guardar.sh ../../estado.enc && test -s ../../estado.enc || { echo "FALLA: no se guardo el estado"; exit 1; }
+          antes=$(psql -At -c "select count(*) from purchase")
+          psql -q -c "drop schema public cascade; create schema public;" 2>/dev/null; rm -rf data/solo
           echo "borrado: $(psql -At -c 'select count(*) from information_schema.tables where table_schema=$$public$$') tablas, data/solo $(ls data/solo 2>/dev/null | wc -l) archivos"
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AFK_CLAVE -in ../../estado.enc | tar xz
           psql -q -f estado/almacen.sql > /dev/null 2>&1; mkdir -p data/solo; cp -a estado/solo/. data/solo/; rm -rf estado
-          echo "recuperado:"; bash ../../afk-resumen.sh
+          despues=$(psql -At -c "select count(*) from purchase" 2>/dev/null)
+          echo "recuperado: $despues de $antes compras"; bash ../../afk-resumen.sh
+          [ "$despues" = "$antes" ] || { echo "FALLA: el almacen no volvio igual"; exit 1; }
           ./bots.sh arrancar > /dev/null 2>&1 || exit 1
           t0=$(date +%s)
           for i in $(seq 1 300); do
