@@ -1,7 +1,7 @@
-2c794dde39f9e70d890f4b0b532541795f8ec07a
+d952a69ceda690e34ec6208488130b1e926f9677
 chestzones-module,1491b1318593388eb251056c6c1481add5c15b85,claude/autoenchant-sim
 PRIORITY
 
-solo.order=COMPRAR
+solo.order=COMPRAR cap.RUNE|chef|4|100|=1000 cap.RUNE|vanquish|3|100|=200000
 15
-# solo-e2e run 8: solo comprar con ItemSniper history primero (1491b13)
+# solo-e2e run 9: solo comprar, d952a69 + ItemSniper 1491b13, con precio maximo (chef nunca, vanquish holgado)
