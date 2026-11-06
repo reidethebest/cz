@@ -206,7 +206,7 @@ jobs:
         run: |
           J8=$JAVA_HOME/bin
           mkdir -p spigot bt
-          if [ ! -f spigot/spigot-1.8.8.jar ]; then (cd bt && curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar && $J8/java -jar BuildTools.jar --rev 1.8.8 > bt.log 2>&1 && cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar); fi
+          if [ ! -f spigot/spigot-1.8.8.jar ]; then (cd bt && curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar && $J8/java -jar BuildTools.jar --rev 1.8.8 > bt.log 2>&1 && cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar) || { echo "no se pudo armar Spigot"; tail -20 bt/bt.log 2>/dev/null; exit 1; }; fi
           (cd tools/MinecadiaEmu && mkdir -p out && $J8/javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java && $J8/jar cf MinecadiaEmu.jar -C out . -C src/main/resources .)
           mkdir -p server/plugins/MinecadiaEmu; cp spigot/spigot-1.8.8.jar server/; cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
           E2E=tools/MinecadiaEmu/e2e
@@ -216,6 +216,14 @@ jobs:
           mkfifo console; nohup sleep infinity > console 2>/dev/null &
           nohup $J8/java -Xmx1G -jar spigot-1.8.8.jar nogui < console > server.log 2>&1 &
           for i in $(seq 1 120); do grep -q "Done (" server.log && break; sleep 5; done; grep -q "Done (" server.log && echo "emulador listo"
+
+      - name: Guardar Spigot 1.8.8
+        if: env.MODO_AFK == 'prueba' && hashFiles('spigot/spigot-1.8.8.jar') != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
 
       - name: Login Microsoft (una vez)
         if: env.MODO_AFK == 'login'
