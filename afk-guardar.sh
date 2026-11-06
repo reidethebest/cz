@@ -6,7 +6,7 @@ out=$1
 : "${AFK_CLAVE:?falta AFK_CLAVE}"
 rm -rf estado; mkdir -p estado/solo/logs-anteriores
 pg_dump --clean --if-exists --no-owner --no-privileges > estado/almacen.sql 2>/dev/null || echo "aviso: no se pudo volcar el almacen"
-for f in msa.json cuenta reinicios.log; do [ -f data/solo/$f ] && cp data/solo/$f estado/solo/; done
+for f in msa.json cuenta reinicios.log comandos.sha; do [ -f data/solo/$f ] && cp data/solo/$f estado/solo/; done
 [ -f data/solo/vigilante.log ] && tail -n 5000 data/solo/vigilante.log > estado/solo/vigilante.log
 c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1); [ -n "$c" ] && tail -n 4000 "$c" > estado/solo/logs-anteriores/ultimo-cliente.out
 echo $(( $(cat ../../tanda-anterior 2>/dev/null || echo 0) + 1 )) > estado/tanda

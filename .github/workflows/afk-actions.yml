@@ -52,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
+      AFK_CONTROL: ${{ vars.AFK_CONTROL || 'claude/project-thread-9ah29y' }}
       MODO_AFK: ${{ inputs.modo || (github.event_name == 'push' && 'prueba') || 'correr' }}
       PGHOST: 127.0.0.1
       PGUSER: pipeline
@@ -75,6 +76,14 @@ jobs:
             git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$BASE"
             git -C /tmp/src archive FETCH_HEAD tools/MinecadiaEmu | tar x
           fi
+          # canal de control privado: afk/objetivo.set y afk/comandos.txt de la rama AFK_CONTROL (si existe)
+          if [ "$MODO_AFK" != prueba ] && [ -n "$AFK_CONTROL" ]; then
+            if git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null; then
+              mkdir -p /tmp/control; git -C /tmp/src archive FETCH_HEAD afk 2>/dev/null | tar x -C /tmp/control 2>/dev/null || true
+              echo "control: $(git -C /tmp/src log -1 --format=%h FETCH_HEAD), objetivo $([ -s /tmp/control/afk/objetivo.set ] && echo si || echo no), comandos $([ -s /tmp/control/afk/comandos.txt ] && echo si || echo no)"
+            else echo "control: sin rama de control, uso los secrets"; fi
+          fi
+          if [ "$MODO_AFK" = prueba ]; then mkdir -p /tmp/control/afk; printf 'estado\n# comentario\n' > /tmp/control/afk/comandos.txt; fi
           rm -rf /tmp/src
 
       - name: Config (de los secrets; nada se imprime)
@@ -104,6 +113,7 @@ jobs:
             sed -i "s#^SERVER=.*#SERVER=$S_SERVER#" config/bots.env
             printf '%s\n' "$S_INICIO" > config/inicio.txt
             printf '%s\n' "$S_OBJETIVO" > config/objetivo.set
+            if [ -s /tmp/control/afk/objetivo.set ]; then cp /tmp/control/afk/objetivo.set config/objetivo.set; echo "objetivo: de la rama de control"; fi
             echo "export AFK_CLAVE=$S_CLAVE" > ../../.clave
           fi
           echo "config lista: $(wc -l < config/inicio.txt) lineas de inicio, $(grep -cvE '^\s*(#|$)' config/objetivo.set) lineas de objetivo"
@@ -155,6 +165,27 @@ jobs:
             echo "sin estado anterior: arranca de cero"
           fi
           bash ../../afk-resumen.sh || true
+
+      - name: solo-cli y comandos de la rama de control (una vez por cambio)
+        if: env.MODO_AFK != 'login'
+        working-directory: deploy/vps
+        run: |
+          set -f
+          [ -d data/src/pipeline ] || { echo "AVISO: no esta el codigo del pipeline, sin solo-cli"; exit 0; }
+          command -v gradle >/dev/null || { echo "AVISO: no hay gradle, sin solo-cli"; exit 0; }
+          J=${JAVA_HOME_21_X64:-$JAVA_HOME}
+          JAVA_HOME=$J gradle -q --no-daemon -p data/src/pipeline soloCliJar > ../../solo-cli-build.log 2>&1 \
+            || { echo "AVISO: no se armo solo-cli"; tail -15 ../../solo-cli-build.log | grep -vi token; exit 0; }
+          cp "$(find data/src/pipeline/build -name solo-cli.jar | head -1)" data/solo-cli.jar && echo "solo-cli listo"
+          f=/tmp/control/afk/comandos.txt
+          [ -s $f ] || { echo "sin comandos"; exit 0; }
+          [ "${{ inputs.set_nuevo }}" = true ] && rm -f data/solo/comandos.sha
+          h=$(sha256sum $f | cut -c1-64)
+          if [ "$h" = "$(cat data/solo/comandos.sha 2>/dev/null)" ]; then echo "comandos sin cambios: no se repiten"; exit 0; fi
+          grep -vE '^\s*(#|$)' $f | while IFS= read -r c; do
+            echo "> $c"; $J/bin/java -jar data/solo-cli.jar --pg jdbc:postgresql://127.0.0.1:5432/pipeline --user pipeline --pass pipeline $c 2>&1 | head -40 | sed 's/^/  /'
+          done
+          mkdir -p data/solo; echo "$h" > data/solo/comandos.sha
 
       - name: JDK 8 para el emulador
         if: env.MODO_AFK == 'prueba'
