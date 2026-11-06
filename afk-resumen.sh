@@ -9,4 +9,5 @@ q "select '  falta ' || spec_key || ' ' || applied || '/' || required from bom w
 q "select '  compras ' || status || ': ' || count(*) || ' (' || coalesce(sum(qty*unit_price),0) || ' de plata)' from purchase group by status order by status"
 l=$(q "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'")
 [ -n "$l" ] && echo "  ultimo latido del bot: hace ${l} s"
+[ -s data/solo-cli.jar ] && java -jar data/solo-cli.jar --pg jdbc:postgresql://127.0.0.1:5432/pipeline --user pipeline --pass pipeline lista 2>/dev/null | head -40 | sed 's/^/  /'
 exit 0
