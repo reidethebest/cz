@@ -163,15 +163,29 @@ def xbox_chain(op, msa_access):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument("--cookies", required=True)
+    a.add_argument("--cookies")
+    a.add_argument("--ms-refresh", help="archivo con un refresh_token de Microsoft ya aprobado (codigo aprobado a mano en otro lado)")
     a.add_argument("--out", required=True)
     a.add_argument("--app-id", default=APP_ID)
     a.add_argument("--timeout", type=int, default=180)
     o = a.parse_args()
-    jar, n = load_cookies(o.cookies)
-    log("cookies cargadas:", n)
-    op = opener(jar)
-    msa_access, refresh = device_flow(op, o.app_id, o.timeout)
+    if o.ms_refresh:
+        op = opener(http.cookiejar.CookieJar())
+        rt = open(o.ms_refresh).read().strip()
+        st, body, _ = post_form(op, TOKEN, {"client_id": o.app_id, "grant_type": "refresh_token",
+                                            "refresh_token": rt, "scope": SCOPE})
+        tok = json.loads(body)
+        if "access_token" not in tok:
+            raise SystemExit("login: el refresh_token de Microsoft no sirvio (%s)" % tok.get("error", "?"))
+        msa_access, refresh = tok["access_token"], tok.get("refresh_token", rt)
+        log("token de Microsoft renovado")
+    else:
+        if not o.cookies:
+            raise SystemExit("login: falta --cookies o --ms-refresh")
+        jar, n = load_cookies(o.cookies)
+        log("cookies cargadas:", n)
+        op = opener(jar)
+        msa_access, refresh = device_flow(op, o.app_id, o.timeout)
     mc_access, raw_uuid, name = xbox_chain(op, msa_access)
     u = str(uuidlib.UUID(raw_uuid))  # con guiones, como lo guarda portablemc
     # el xuid va dentro del JWT de Minecraft (claim "xuid"); portablemc lo lee del token, aca lo dejamos vacio si no esta

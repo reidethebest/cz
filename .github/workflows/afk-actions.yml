@@ -254,7 +254,11 @@ jobs:
         run: |
           ROL=${{ inputs.cuenta || 'solo' }}; mkdir -p data/$ROL
           CK="$AFK_COOKIES"; [ "$ROL" = vigia ] && [ -n "$AFK_COOKIES_VIGIA" ] && CK="$AFK_COOKIES_VIGIA"
-          if [ -n "$CK" ]; then
+          if [ -s /tmp/control/afk/login/$ROL.ms ]; then
+            # token de Microsoft ya aprobado a mano (codigo de microsoft.com/link) que dejo Claude en la rama de control privada
+            python3 ../../tools/login/cookie-login.py --ms-refresh /tmp/control/afk/login/$ROL.ms --out data/$ROL/msa.json > /tmp/l.log 2>&1; rc=$?
+            grep -E '^(login|token de)' /tmp/l.log; [ $rc = 0 ] || { tail -1 /tmp/l.log | cut -c1-160; exit 1; }
+          elif [ -n "$CK" ]; then
             # login con las cookies de la sesion de Microsoft (sin clave): deja msa.json que el kit renueva solo
             umask 077; printf '%s\n' "$CK" > /tmp/ck.txt
             if python3 ../../tools/login/cookie-login.py --cookies /tmp/ck.txt --out data/$ROL/msa.json --timeout 600; then
@@ -378,8 +382,11 @@ jobs:
           test -f set-completo || { echo "FALLA: el set no se completo"; exit 1; }
           E2E_ORCH=Solo E2E_BUYER=Solo E2E_CLIENTS=solo python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu deploy/vps/config/objetivo.set
           # proxys: cada conexion del comprador paso por un proxy (o espero sin conectarse), y el vigia entro por alguno
-          cat deploy/vps/data/solo/logs/cliente-*.out > /tmp/c.out; cat deploy/vps/data/vigia/logs/cliente-*.out > /tmp/v.out 2>/dev/null
-          con=$(grep -ac 'Connecting to' /tmp/c.out); uso=$(grep -ac '\[PROXY\] uso' /tmp/c.out); esp=$(grep -ac 'ningun proxy sano' /tmp/c.out)
+          # el corte de tanda borra data/solo y solo recupera el ultimo .out (logs-anteriores): junto todos los .out que haya
+          find deploy/vps/data/solo -name '*.out' -exec cat {} + > /tmp/c.out 2>/dev/null || true
+          find deploy/vps/data/vigia -name '*.out' -exec cat {} + > /tmp/v.out 2>/dev/null || true
+          echo "logs: comprador $(wc -l < /tmp/c.out) lineas, vigia $(wc -l < /tmp/v.out) lineas"
+          con=$(grep -ac 'Connecting to' /tmp/c.out || true); uso=$(grep -ac '\[PROXY\] uso' /tmp/c.out || true); esp=$(grep -ac 'ningun proxy sano' /tmp/c.out || true)
           echo "comprador: $con conexiones, $uso por proxy, $esp esperando, $(grep -ac '\[PROXY\] .* malo' /tmp/c.out) proxys caidos, $(grep -ac 'entro bien' /tmp/c.out) entradas buenas"
           echo "vigia: $(grep -ac '\[PROXY\] uso' /tmp/v.out) conexiones, $(grep -ac 'entro bien' /tmp/v.out) entradas buenas, $(grep -ac '\[PROXY\] .* malo' /tmp/v.out) caidos"
           grep -m3 'vigia:' proxy-vigia.log || true
