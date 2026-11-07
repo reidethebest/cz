@@ -376,15 +376,19 @@ jobs:
             [ -n "$pr" ] && GH_TOKEN=$GHT gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "AVISO $1: $2 (tanda $GITHUB_RUN_ID, minuto $((now / 60)))" > /dev/null 2>&1
           }
           revisar_avisos() {
-            if [ $now -ge 600 ] && [ -s data/proxys/estado.json ]; then
-              px=$(python3 -c "import json;e=json.load(open('data/proxys/estado.json'));print('%d candidatos, %d sanos, %d para usar, mediana %s ms' % (e['candidatos'], e['sanos'], e['comprador'], e['ms_mediana']))" 2>/dev/null)
-              ul=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
-              avisar ARRANCO "10 min andando; proxys: ${px:-sin datos}; ultimo latido hace ${ul:-?} s"
-            fi
             bot=$(psql -At -c "select coalesce(sum(split_part(l, E'\t', 2)::int), 0) from snapshot, regexp_split_to_table(contents, E'\n') l where l like 'BOTTLE|%'" 2>/dev/null)
             pend=$(psql -At -c "select coalesce(sum(qty - made), 0) from rune_order where state not in ('DONE', 'CANCELLED') and made < qty" 2>/dev/null)
             nro=$(psql -At -c "select count(*) from rune_order" 2>/dev/null)
-            [ "$bot" = 0 ] && [ -n "$pend" ] && [ "$pend" != 0 ] && avisar SIN_BOTELLAS "no quedan botellas y faltan $pend runas (cargar mas en /pv 1)"
+            nsn=$(psql -At -c "select count(*) from snapshot" 2>/dev/null)
+            if [ $now -ge 600 ] && [ -s data/proxys/estado.json ]; then
+              px=$(python3 -c "import json;e=json.load(open('data/proxys/estado.json'));print('%d candidatos, %d sanos, %d para usar, mediana %s ms' % (e['candidatos'], e['sanos'], e['comprador'], e['ms_mediana']))" 2>/dev/null)
+              ul=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
+              avisar ARRANCO "10 min andando; proxys: ${px:-sin datos}; ultimo latido hace ${ul:-?} s; botellas ${bot:-?}, runas que faltan ${pend:-?}, ${nsn:-0} cofres/pv mirados"
+            fi
+            # cada 30 min un estado con numeros (botellas, runas que faltan): se ve en vivo sin esperar el fin de la tanda
+            [ $now -ge 1200 ] && [ $(( now % 1800 )) -lt 60 ] && avisar ESTADO_$((now / 1800)) "botellas ${bot:-?}, runas que faltan ${pend:-?} de ${nro:-?} pedidas, ${nsn:-0} cofres/pv mirados"
+            # sin botellas solo despues de mirar los /pv (al principio el indice esta vacio y daria 0)
+            [ "${nsn:-0}" -gt 0 ] && [ $now -ge 600 ] && [ "$bot" = 0 ] && [ -n "$pend" ] && [ "$pend" != 0 ] && avisar SIN_BOTELLAS "no quedan botellas y faltan $pend runas (cargar mas en /pv 1)"
             [ "${nro:-0}" != 0 ] && [ "$pend" = 0 ] && avisar RUNAS_LISTAS "todas las runas pedidas estan al 100% y guardadas"
             l=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
             [ -n "$l" ] && [ "$l" -gt 900 ] && avisar QUIETO "el bot no da senales hace $((l / 60)) min (desconectado o trabado)"
@@ -416,6 +420,7 @@ jobs:
           if [ "$MODO_AFK" = prueba ]; then
             # solo en la prueba (emulador, nada real): que hizo el cliente, para ver por que no avanzo
             cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a -E '\[PIPELINE\]|\[ChestZones\]|\[ORDEN\]|\[E2E\]|Exception' | grep -v 'estado ' | sed 's/^.*\] \[/[/' | tail -60
+            cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a '\[ORDEN\]' > /tmp/ordenes-vistas.txt || true
             # donde cae un NullPointerException (solo nombres de metodo y linea, sin codigo)
             cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a -A14 'Caused by: java.lang.NullPointerException' | grep -a -oE 'at net\.minecadia[A-Za-z0-9_.$]*\([A-Za-z0-9_.]*:[0-9]+\)' | sort | uniq -c | sort -rn | head -12
             [ "$(psql -At -c 'select count(*) from bom' 2>/dev/null)" != "0" ] || { echo "FALLA: el bot nunca cargo el objetivo (no termino de prepararse)"; exit 1; }
@@ -487,8 +492,8 @@ jobs:
           [ "$pvs" -gt 0 ] || { echo "FALLA: el bot nunca abrio un /pv"; exit 1; }
           # ordenes a mano: las corrio y contesto
           grep -a '\[ORDEN\]' /tmp/c.out | sed 's/.*\[ORDEN\]/[ORDEN]/' | head -40
-          grep -aq "\[ORDEN\] ventana 'Vault #15'" /tmp/c.out || { echo "FALLA: la orden 'chat /pv 15' + 'ver' no mostro el /pv 15"; exit 1; }
-          grep -aq "\[ORDEN\] no entiendo 'noexiste'" /tmp/c.out || { echo "FALLA: una orden desconocida no se aviso"; exit 1; }
+          grep -aq "\[ORDEN\] ventana 'Vault #15'" /tmp/c.out /tmp/ordenes-vistas.txt || { echo "FALLA: la orden 'chat /pv 15' + 'ver' no mostro el /pv 15"; exit 1; }
+          grep -aq "\[ORDEN\] no entiendo 'noexiste'" /tmp/c.out /tmp/ordenes-vistas.txt || { echo "FALLA: una orden desconocida no se aviso"; exit 1; }
 
       - name: Aviso de fin de tanda
         if: always() && env.MODO_AFK == 'correr'
