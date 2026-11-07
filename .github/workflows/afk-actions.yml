@@ -248,10 +248,30 @@ jobs:
       - name: Login Microsoft (una vez)
         if: env.MODO_AFK == 'login'
         working-directory: deploy/vps
+        env:
+          AFK_COOKIES: ${{ secrets.AFK_COOKIES }}
+          AFK_COOKIES_VIGIA: ${{ secrets.AFK_COOKIES_VIGIA }}
         run: |
-          echo "Abri https://www.microsoft.com/link y escribi el codigo de abajo (entra con la cuenta del bot):"
-          timeout 900 ./bots.sh login ${{ inputs.cuenta || 'solo' }} 2>&1 | grep -iE "code|codigo|link|guardada|error" | grep -viE "token|refresh"
-          test -s data/${{ inputs.cuenta || 'solo' }}/msa.json && echo "login guardado"
+          ROL=${{ inputs.cuenta || 'solo' }}; mkdir -p data/$ROL
+          CK="$AFK_COOKIES"; [ "$ROL" = vigia ] && [ -n "$AFK_COOKIES_VIGIA" ] && CK="$AFK_COOKIES_VIGIA"
+          if [ -n "$CK" ]; then
+            # login con las cookies de la sesion de Microsoft (sin clave): deja msa.json que el kit renueva solo
+            umask 077; printf '%s\n' "$CK" > /tmp/ck.txt
+            if python3 ../../tools/login/cookie-login.py --cookies /tmp/ck.txt --out data/$ROL/msa.json --timeout 300; then
+              rm -f /tmp/ck.txt; cp data/$ROL/msa.json /tmp/msa-$ROL.json 2>/dev/null || true
+            else
+              rm -f /tmp/ck.txt
+              echo "las cookies no alcanzaron: aproba el codigo de arriba a mano en microsoft.com/link (una vez)"
+              exit 1
+            fi
+          else
+            echo "Abri https://www.microsoft.com/link y escribi el codigo de abajo (entra con la cuenta del bot):"
+            timeout 900 ./bots.sh login $ROL 2>&1 | grep -iE "code|codigo|link|guardada|error" | grep -viE "token|refresh"
+          fi
+          test -s data/$ROL/msa.json && echo "login guardado para $ROL"
+          # guardar el login en el estado cifrado aunque esta sea solo la tanda de login
+          . ../../.clave 2>/dev/null || true
+          if [ -n "${AFK_CLAVE:-}" ]; then bash ../../afk-guardar.sh ../../estado.enc 2>&1 | grep -i login || true; fi
 
       - name: Proxys (vigia)
         if: env.MODO_AFK != 'login'
@@ -348,8 +368,8 @@ jobs:
         if: always() && env.MODO_AFK != 'prueba' && hashFiles('estado.enc') != ''
         uses: actions/cache/save@v4
         with:
-          path: estado.enc
           key: afk-estado-real-${{ github.run_id }}-${{ github.run_attempt }}
+          path: estado.enc
 
       - name: Prueba - chequeo del emulador
         if: env.MODO_AFK == 'prueba'
