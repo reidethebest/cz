@@ -406,6 +406,8 @@ jobs:
           if [ "$MODO_AFK" = prueba ]; then
             # solo en la prueba (emulador, nada real): que hizo el cliente, para ver por que no avanzo
             cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a -E '\[PIPELINE\]|\[ChestZones\]|\[ORDEN\]|\[E2E\]|Exception' | grep -v 'estado ' | sed 's/^.*\] \[/[/' | tail -60
+            # donde cae un NullPointerException (solo nombres de metodo y linea, sin codigo)
+            cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a -A14 'Caused by: java.lang.NullPointerException' | grep -a -oE 'at net\.minecadia[A-Za-z0-9_.$]*\([A-Za-z0-9_.]*:[0-9]+\)' | sort | uniq -c | sort -rn | head -12
             [ "$(psql -At -c 'select count(*) from bom' 2>/dev/null)" != "0" ] || { echo "FALLA: el bot nunca cargo el objetivo (no termino de prepararse)"; exit 1; }
           fi
 
