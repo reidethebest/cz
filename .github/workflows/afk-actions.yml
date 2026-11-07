@@ -356,9 +356,37 @@ jobs:
           traer_ordenes() {
             [ "$MODO_AFK" = prueba ] && return
             d=$(mktemp -d); git -C "$d" init -q
-            if git -C "$d" -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null \
-               && git -C "$d" show FETCH_HEAD:afk/ordenes.txt > "$d/o" 2>/dev/null; then mkdir -p data/solo; cp "$d/o" data/solo/ordenes.txt; fi
+            if git -C "$d" -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null; then
+              git -C "$d" show FETCH_HEAD:afk/ordenes.txt > "$d/o" 2>/dev/null && { mkdir -p data/solo; cp "$d/o" data/solo/ordenes.txt; }
+              # recarga en caliente: afk/recarga.txt cambio -> jar nuevo (en segundo plano, el bot sigue) y config nueva,
+              # despues reinicio solo el cliente (~1 min en vez de una tanda nueva de ~6 min)
+              git -C "$d" show FETCH_HEAD:afk/recarga.txt > "$d/r" 2>/dev/null || : > "$d/r"
+              rs=$(sha1sum < "$d/r" | cut -c1-12)
+              if [ -z "${recarga_sha:-}" ]; then recarga_sha=$rs
+              elif [ "$rs" != "$recarga_sha" ] && [ -z "${recarga_pid:-}" ]; then
+                recarga_sha=$rs; mkdir -p /tmp/recarga; rm -rf /tmp/recarga/afk; git -C "$d" archive FETCH_HEAD afk | tar x -C /tmp/recarga
+                rb=$(grep -m1 '^base=' "$d/r" | cut -d= -f2 | tr -dc 'a-zA-Z0-9/._-'); rm_=$(grep -m1 '^modulos=' "$d/r" | cut -d= -f2 | tr -dc 'a-zA-Z0-9/._,-')
+                echo "recarga pedida ($rs)"
+                ( set +e
+                  if [ -n "$rb$rm_" ]; then
+                    env ${rb:+RAMA_BASE=$rb} ${rm_:+RAMAS_MODULOS=$rm_} GITHUB_TOKEN="$TOKEN" ./build-jar.sh > /tmp/recarga/jar.log 2>&1 || { echo FALLO_JAR > /tmp/recarga/fin; exit; }
+                  fi
+                  [ -s /tmp/recarga/afk/inicio.txt ] && cp /tmp/recarga/afk/inicio.txt config/inicio.txt
+                  [ -s /tmp/recarga/afk/objetivo.set ] && cp /tmp/recarga/afk/objetivo.set config/objetivo.set
+                  ./bots.sh reiniciar solo > /tmp/recarga/reinicio.log 2>&1 && echo OK > /tmp/recarga/fin || echo FALLO_REINICIO > /tmp/recarga/fin
+                ) &
+                recarga_pid=$!
+              fi
+            fi
             rm -rf "$d"
+            if [ -n "${recarga_pid:-}" ] && [ -s /tmp/recarga/fin ]; then
+              f=$(cat /tmp/recarga/fin); rm -f /tmp/recarga/fin; recarga_pid=
+              case "$f" in
+                OK) avisar "RECARGA_$recarga_sha" "recarga hecha: jar/config nuevos y cliente reiniciado" ;;
+                FALLO_JAR) echo "recarga: el jar no compilo"; tail -5 /tmp/recarga/jar.log | grep -v -i token | cut -c1-200; avisar "RECARGA_$recarga_sha" "la recarga fallo: el jar no compilo (el bot sigue con el anterior)" ;;
+                *) avisar "RECARGA_$recarga_sha" "la recarga fallo al reiniciar el cliente" ;;
+              esac
+            fi
           }
           vistas=0
           mostrar_ordenes() {
