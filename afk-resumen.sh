@@ -7,7 +7,7 @@ set -- $tot
 echo "[resumen $(date -u +%H:%M)] set: $2 de $1 lineas completas"
 q "select '  falta ' || spec_key || ' ' || applied || '/' || required from bom where applied < required order by spec_key limit 15"
 q "select '  compras ' || status || ': ' || count(*) || ' (' || coalesce(sum(qty*unit_price),0) || ' de plata)' from purchase group by status order by status"
-l=$(q "select ((extract(epoch from now()) * 1000)::bigint - max(at)) / 1000 from event")
+l=$(q "select case when max(at) > 100000000000 then ((extract(epoch from now()) * 1000)::bigint - max(at)) / 1000 else extract(epoch from now())::bigint - max(at) end from event")
 [ -n "$l" ] && echo "  ultimo latido del bot: hace ${l} s"
 # botellas: cuantas quedan (inventario + /pv + cofres) y si todavia faltan runas de botella. Sin botellas y con runas
 # pendientes, una linea "AVISO SIN BOTELLAS" (Claude la busca en el log y le avisa a REIDEN para que cargue mas)
