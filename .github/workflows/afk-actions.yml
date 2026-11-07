@@ -401,7 +401,7 @@ jobs:
             [ "$MODO_AFK" = correr ] || { echo "[AVISO] $2"; return; }
             grep -qx "$1" /tmp/avisados 2>/dev/null && return
             echo "$1" >> /tmp/avisados; echo "[AVISO] $2"
-            pr=$(GH_TOKEN=$GHT gh pr list --repo "$GITHUB_REPOSITORY" --head avisos --state open --json number -q '.[0].number' 2>/dev/null)
+            pr=$(GH_TOKEN=$GHT gh pr list --repo "$GITHUB_REPOSITORY" --head avisos --state open --json number -q '.[0].number' 2>/dev/null); pr_avisos=$pr
             [ -n "$pr" ] && GH_TOKEN=$GHT gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "AVISO $1: $2 (tanda $GITHUB_RUN_ID, minuto $((now / 60)))" > /dev/null 2>&1
           }
           revisar_avisos() {
@@ -411,7 +411,7 @@ jobs:
             nsn=$(psql -At -c "select count(*) from snapshot" 2>/dev/null)
             if [ $now -ge 600 ] && [ -s data/proxys/estado.json ]; then
               px=$(python3 -c "import json;e=json.load(open('data/proxys/estado.json'));print('%d candidatos, %d sanos, %d para usar, mediana %s ms' % (e['candidatos'], e['sanos'], e['comprador'], e['ms_mediana']))" 2>/dev/null)
-              ul=$(psql -At -c "select ((extract(epoch from now()) * 1000)::bigint - max(at)) / 1000 from event" 2>/dev/null)
+              ul=$(psql -At -c "select case when max(at) > 100000000000 then ((extract(epoch from now()) * 1000)::bigint - max(at)) / 1000 else extract(epoch from now())::bigint - max(at) end from event" 2>/dev/null)
               avisar ARRANCO "10 min andando; proxys: ${px:-sin datos}; ultimo latido hace ${ul:-?} s; botellas ${bot:-?}, runas que faltan ${pend:-?}, ${nsn:-0} cofres/pv mirados"
             fi
             # reporte cada N min (afk/reporte.txt en la rama de control, en minutos; 0 = apagado): botellas, runas al
@@ -426,8 +426,15 @@ jobs:
               hechas=$(( ${made:-0} - made_ini )); mins=$(( (now - t_ini) / 60 ))
               if [ "$hechas" -gt 0 ] && [ "$mins" -gt 0 ]; then ritmo="; ritmo ${hechas} runas en ${mins} min, faltan ~$(( falta * mins / hechas )) min"; else ritmo="; todavia sin runas nuevas para estimar"; fi
               act="quieto"; { [ "$db" -gt 0 ] || [ "$dm" -gt 0 ]; } && act="avanzando"
-              ul2=$(psql -At -c "select ((extract(epoch from now()) * 1000)::bigint - max(at)) / 1000 from event" 2>/dev/null)
+              ul2=$(psql -At -c "select case when max(at) > 100000000000 then ((extract(epoch from now()) * 1000)::bigint - max(at)) / 1000 else extract(epoch from now())::bigint - max(at) end from event" 2>/dev/null)
               avisar "REPORTE_$now" "$act: botellas ${bot:-?} (-${db} desde el ultimo), runas al 100% ${made:-0}/${tot:-0} (+${dm})${ritmo}; ultimo evento hace ${ul2:-?} s | ${lineas}"
+              # log del cliente cifrado para Claude (clave publica en el repo; solo Claude descifra): que hizo el bot
+              c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1)
+              if [ -n "$c" ] && [ -n "$pr_avisos" ]; then
+                grep -a -E '\[PIPELINE\]|\[ChestZones\]|\[ORDEN\]|\[E2E\]|\[CHAT\]|Exception' "$c" | tail -80 \
+                  | openssl cms -encrypt -aes256 -outform PEM ../../tools/proxy/ranking-cert.pem > /tmp/log.pem 2>/dev/null \
+                  && GH_TOKEN=$GHT gh pr comment "$pr_avisos" --repo "$GITHUB_REPOSITORY" --body "$(echo "LOG $now"; cat /tmp/log.pem)" > /dev/null 2>&1
+              fi
               bot_ant=${bot:-0}; made_ant=${made:-0}; ult_rep=$now
             fi
             # cada 30 min un estado con numeros (botellas, runas que faltan): se ve en vivo sin esperar el fin de la tanda
