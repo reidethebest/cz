@@ -14,6 +14,8 @@ if [ -d data/vigia ]; then mkdir -p estado/vigia; for f in msa.json cuenta reini
 [ -f ../../proxy-vigia.log ] && tail -n 200 ../../proxy-vigia.log > estado/solo/logs-anteriores/proxy-vigia.log
 # cache de proxys que entraron al server: se reusa la proxima tanda (lo que pidio REIDEN)
 [ -f data/proxys/cache.tsv ] && { mkdir -p estado/proxys; cp data/proxys/cache.tsv estado/proxys/; }
+# indice de cofres y /pv de ChestZones: la tanda siguiente no vuelve a revisar los 15 /pv antes de arrancar
+(cd data/solo && find . -path '*chestzones*' -name '*.json' -size -20M 2>/dev/null | tar cf - -T - 2>/dev/null) | (cd estado/solo && tar xf - 2>/dev/null) || true
 [ -f data/solo/vigilante.log ] && tail -n 5000 data/solo/vigilante.log > estado/solo/vigilante.log
 c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1); [ -n "$c" ] && tail -n 4000 "$c" > estado/solo/logs-anteriores/ultimo-cliente.out
 echo $(( $(head -1 ../../tanda-anterior 2>/dev/null | tr -dc 0-9 || true) + 1 )) > estado/tanda
