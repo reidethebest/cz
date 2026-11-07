@@ -371,6 +371,11 @@ jobs:
             [ -n "$pr" ] && GH_TOKEN=$GHT gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "AVISO $1: $2 (tanda $GITHUB_RUN_ID, minuto $((now / 60)))" > /dev/null 2>&1
           }
           revisar_avisos() {
+            if [ $now -ge 600 ] && [ -s data/proxys/estado.json ]; then
+              px=$(python3 -c "import json;e=json.load(open('data/proxys/estado.json'));print('%d candidatos, %d sanos, %d para usar, mediana %s ms' % (e['candidatos'], e['sanos'], e['comprador'], e['ms_mediana']))" 2>/dev/null)
+              ul=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
+              avisar ARRANCO "10 min andando; proxys: ${px:-sin datos}; ultimo latido hace ${ul:-?} s"
+            fi
             bot=$(psql -At -c "select coalesce(sum(split_part(l, E'\t', 2)::int), 0) from snapshot, regexp_split_to_table(contents, E'\n') l where l like 'BOTTLE|%'" 2>/dev/null)
             pend=$(psql -At -c "select coalesce(sum(qty - made), 0) from rune_order where state not in ('DONE', 'CANCELLED') and made < qty" 2>/dev/null)
             nro=$(psql -At -c "select count(*) from rune_order" 2>/dev/null)
