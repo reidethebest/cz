@@ -258,19 +258,16 @@ jobs:
             # token de Microsoft ya aprobado a mano (codigo de microsoft.com/link) que dejo Claude en la rama de control privada
             python3 ../../tools/login/cookie-login.py --ms-refresh /tmp/control/afk/login/$ROL.ms --out data/$ROL/msa.json > /tmp/l.log 2>&1; rc=$?
             grep -E '^(login|token de)' /tmp/l.log; [ $rc = 0 ] || { tail -1 /tmp/l.log | cut -c1-160; exit 1; }
-          elif [ -n "$CK" ]; then
-            # login con las cookies de la sesion de Microsoft (sin clave): deja msa.json que el kit renueva solo
+          fi
+          if [ ! -s data/$ROL/msa.json ] && [ -n "$CK" ]; then
+            # intento con las cookies de la sesion de Microsoft (sin clave); si no alcanzan, cae al device code
             umask 077; printf '%s\n' "$CK" > /tmp/ck.txt
-            if python3 ../../tools/login/cookie-login.py --cookies /tmp/ck.txt --out data/$ROL/msa.json --timeout 600; then
-              rm -f /tmp/ck.txt; cp data/$ROL/msa.json /tmp/msa-$ROL.json 2>/dev/null || true
-            else
-              rm -f /tmp/ck.txt
-              echo "las cookies no alcanzaron: aproba el codigo de arriba a mano en microsoft.com/link (una vez)"
-              exit 1
-            fi
-          else
-            echo "Abri https://www.microsoft.com/link y escribi el codigo de abajo (entra con la cuenta del bot):"
-            timeout 900 ./bots.sh login $ROL 2>&1 | grep -iE "code|codigo|link|guardada|error" | grep -viE "token|refresh"
+            python3 ../../tools/login/cookie-login.py --cookies /tmp/ck.txt --out data/$ROL/msa.json --timeout 300 || echo "las cookies no alcanzaron: voy al codigo"
+            rm -f /tmp/ck.txt
+          fi
+          if [ ! -s data/$ROL/msa.json ]; then
+            # device code: imprime una sola linea "CODIGO <xxxx>"; Claude la lee del log y te la pasa, vos aprobas una vez
+            python3 ../../tools/login/device-login.py --out data/$ROL/msa.json --timeout 840
           fi
           test -s data/$ROL/msa.json && echo "login guardado para $ROL"
           # guardar el login en el estado cifrado aunque esta sea solo la tanda de login
