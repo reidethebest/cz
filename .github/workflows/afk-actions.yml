@@ -229,8 +229,10 @@ jobs:
         if: env.MODO_AFK == 'login'
         working-directory: deploy/vps
         run: |
-          echo "Abri https://www.microsoft.com/link y escribi el codigo de abajo (entra con la cuenta del bot):"
-          timeout 900 ./bots.sh login solo 2>&1 | grep -iE "code|codigo|link|guardada|error" | grep -viE "token|refresh"
+          # device code: imprime "CODIGO <xxxx>"; se aprueba una vez en microsoft.com/link con la cuenta del bot.
+          # Hace XBL -> XSTS -> Minecraft aca (red abierta) y deja el msa.json que el kit renueva solo. No imprime tokens.
+          mkdir -p data/solo
+          python3 ../../tools/login/device-login.py --out data/solo/msa.json --timeout 840
           test -s data/solo/msa.json && echo "login guardado"
 
       - name: Correr el bot
