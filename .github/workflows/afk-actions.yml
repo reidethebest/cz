@@ -56,7 +56,9 @@ concurrency:
 
 permissions:
   contents: read
-  actions: write   # para lanzar la tanda siguiente
+  actions: write          # para lanzar la tanda siguiente
+  pull-requests: write    # avisos: un comentario en el PR "avisos" despierta a Claude
+  issues: write
 
 jobs:
   tanda:
@@ -94,6 +96,7 @@ jobs:
           if [ "$MODO_AFK" != prueba ] && [ -n "$AFK_CONTROL" ]; then
             if git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null; then
               mkdir -p /tmp/control; git -C /tmp/src archive FETCH_HEAD afk 2>/dev/null | tar x -C /tmp/control 2>/dev/null || true
+              [ "$(head -1 /tmp/control/afk/seguir.txt 2>/dev/null | tr -d '[:space:]')" = 1 ] && echo "SEGUIR=1" >> "$GITHUB_ENV"
               echo "control: $(git -C /tmp/src log -1 --format=%h FETCH_HEAD), objetivo $([ -s /tmp/control/afk/objetivo.set ] && echo si || echo no), comandos $([ -s /tmp/control/afk/comandos.txt ] && echo si || echo no)"
             else echo "control: sin rama de control, uso los secrets"; fi
           fi
@@ -129,8 +132,9 @@ jobs:
             sed -i 's/^RAM=.*/RAM=1280m/' config/bots.env
             sed -i -e 's/^SERVER=.*/SERVER=127.0.0.1/' -e 's/^AUTH=.*/AUTH=offline/' -e 's/^CUENTA_SOLO=.*/CUENTA_SOLO=Solo/' \
               -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' config/bots.env
-            grep -vE '^(quit|chat /emu dump|wait (60000|100)$)' $E2E/orquestador.txt | sed 's/^cmd ;toggle PipelineBot$/cmd ;toggle PipelineBot on/' > config/inicio.txt
-            cp $E2E/target-clon-leggings.tsv config/objetivo.set
+            # como en el server real: sin cofres, todo en /pv 1..15 (PlayerVaults); el bot los abre por comando
+            printf 'wait 200\ncmd ;toggle PipelineBot on\n' > config/inicio.txt
+            { cat $E2E/target-clon-leggings.tsv; echo '#!config pv=1-2:BOTTLES,3-10:RUNES_OUT,11-12:DELIVERY,13:STAGING,14-15:STORAGE'; } > config/objetivo.set
             echo "export AFK_CLAVE=${S_CLAVE:-prueba-sin-clave}" > ../../.clave
           else
             if [ "$MODO_AFK" != login ]; then
@@ -241,6 +245,16 @@ jobs:
           mkdir -p server/plugins/MinecadiaEmu; cp spigot/spigot-1.8.8.jar server/; cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
           E2E=tools/MinecadiaEmu/e2e
           sed -E 's/^(\s+)Sniper:/\1Solo:/; s/players: \[Sniper\]/players: [Solo]/' $E2E/config-clon-leggings.yml > server/plugins/MinecadiaEmu/config.yml
+          # sin cofres en el mundo: las botellas y la basura de la base van a /pv 1 y /pv 14 (base.fill queda para check.py)
+          python3 - server/plugins/MinecadiaEmu/config.yml <<'PY'
+          import re, sys
+          p = sys.argv[1]; s = open(p).read()
+          fill = lambda role: (re.search(r"\n    " + role + r":\s*(\[[^\]]*\])", s) or [None, "[]"])[1]
+          pv = '\npv:\n  count: 15\n  size: 54\n  fill:\n    "1": %s\n    "14": %s\n' % (fill("BOTTLES"), fill("STORAGE"))
+          s = re.sub(r"(\n  chests: )\[[^\]]*\]", r"\1[]", s, count=1) + pv
+          open(p, "w").write(s)
+          PY
+          grep -A5 '^pv:' server/plugins/MinecadiaEmu/config.yml
           cd server; echo "eula=true" > eula.txt
           printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\nmax-players=10\n' > server.properties
           mkfifo console; nohup sleep infinity > console 2>/dev/null &
@@ -308,6 +322,9 @@ jobs:
             echo MINECADIA_PROXY_TUNNEL_LOCAL=1 >> $GITHUB_ENV
             echo -e "VIGIA=1\nCUENTA_VIGIA=Vigia" >> config/bots.env
           else
+            # listas publicas de la rama de control privada si no hay secret/variable; se releen cada 40 min
+            [ -n "$AFK_PROXY_FUENTES" ] || AFK_PROXY_FUENTES=$(grep -E '^https?://' /tmp/control/afk/proxy-fuentes.txt 2>/dev/null || true)
+            export AFK_PROXY_RELEER=${AFK_PROXY_RELEER:-2400}
             if [ -z "$AFK_PROXIES" ] && [ -z "$AFK_PROXY_FUENTES" ]; then echo "sin proxys: la cuenta entra con la IP de GitHub"; exit 0; fi
             SERVER=$(grep '^SERVER=' config/bots.env | cut -d= -f2-)
             if [ -s data/vigia/msa.json ]; then echo VIGIA=1 >> config/bots.env; echo "cuenta vigia: si"; else echo "cuenta vigia: no (modo login, cuenta vigia, para sumarla)"; fi
@@ -322,8 +339,50 @@ jobs:
       - name: Correr el bot
         if: env.MODO_AFK != 'login'
         working-directory: deploy/vps
+        env:
+          PIPELINE_ORDENES: ${{ github.workspace }}/deploy/vps/data/solo/ordenes.txt
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+          GHT: ${{ github.token }}
         run: |
           set +e
+          # ordenes a mano: afk/ordenes.txt de la rama de control privada, releida cada minuto; el bot corre cada linea
+          # nueva una vez (ver Ordenes.kt) y aca se muestran sus respuestas "[ORDEN]"
+          H="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          traer_ordenes() {
+            [ "$MODO_AFK" = prueba ] && return
+            d=$(mktemp -d); git -C "$d" init -q
+            if git -C "$d" -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null \
+               && git -C "$d" show FETCH_HEAD:afk/ordenes.txt > "$d/o" 2>/dev/null; then mkdir -p data/solo; cp "$d/o" data/solo/ordenes.txt; fi
+            rm -rf "$d"
+          }
+          vistas=0
+          mostrar_ordenes() {
+            r=$(cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a '\[ORDEN\]' | sed 's/.*\[ORDEN\]/[ORDEN]/')
+            n=$(printf '%s' "$r" | grep -c . || true)
+            [ "$n" -gt "$vistas" ] && printf '%s\n' "$r" | tail -n +$((vistas + 1)); [ "$n" -lt "$vistas" ] || vistas=$n
+          }
+          # avisos: un comentario en el PR de la rama "avisos" (solo numeros, nada privado: el repo es publico).
+          # Cada aviso sale una vez por tanda. Claude esta suscripto a ese PR y se despierta con el comentario.
+          avisar() {
+            [ "$MODO_AFK" = correr ] || { echo "[AVISO] $2"; return; }
+            grep -qx "$1" /tmp/avisados 2>/dev/null && return
+            echo "$1" >> /tmp/avisados; echo "[AVISO] $2"
+            pr=$(GH_TOKEN=$GHT gh pr list --repo "$GITHUB_REPOSITORY" --head avisos --state open --json number -q '.[0].number' 2>/dev/null)
+            [ -n "$pr" ] && GH_TOKEN=$GHT gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "AVISO $1: $2 (tanda $GITHUB_RUN_ID, minuto $((now / 60)))" > /dev/null 2>&1
+          }
+          revisar_avisos() {
+            bot=$(psql -At -c "select coalesce(sum(split_part(l, E'\t', 2)::int), 0) from snapshot, regexp_split_to_table(contents, E'\n') l where l like 'BOTTLE|%'" 2>/dev/null)
+            pend=$(psql -At -c "select coalesce(sum(qty - made), 0) from rune_order where state not in ('DONE', 'CANCELLED') and made < qty" 2>/dev/null)
+            nro=$(psql -At -c "select count(*) from rune_order" 2>/dev/null)
+            [ "$bot" = 0 ] && [ -n "$pend" ] && [ "$pend" != 0 ] && avisar SIN_BOTELLAS "no quedan botellas y faltan $pend runas (cargar mas en /pv 1)"
+            [ "${nro:-0}" != 0 ] && [ "$pend" = 0 ] && avisar RUNAS_LISTAS "todas las runas pedidas estan al 100% y guardadas"
+            l=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
+            [ -n "$l" ] && [ "$l" -gt 900 ] && avisar QUIETO "el bot no da senales hace $((l / 60)) min (desconectado o trabado)"
+            [ $now -gt 300 ] && ! pgrep -f portablemc > /dev/null && avisar CAIDO "el cliente de Minecraft se cerro"
+            c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1)
+            [ -n "$c" ] && ne=$(grep -ac 'Exception' "$c") && [ "$ne" -gt 200 ] && avisar ERRORES "el cliente lleva $ne errores (Exception) en el log"
+          }
+          traer_ordenes
           HORAS='${{ inputs.horas || '5.5' }}'
           if [ "$MODO_AFK" = prueba ]; then HORAS=0.12; fi
           LIMITE=$(python3 -c "print(int(min(float('$HORAS'), 5.5) * 3600))")
@@ -331,14 +390,26 @@ jobs:
           ./bots.sh arrancar > /dev/null 2>&1 || { echo "no arranco: ./bots.sh revisar marco algo (mira arriba)"; exit 1; }
           echo "bot prendido por $LIMITE s"
           t0=$(date +%s)
+          if [ "$MODO_AFK" = prueba ]; then
+            # prueba de ordenes: se escriben con el bot andando; abre un /pv a mano, mira y cierra
+            ( sleep 150; mkdir -p data/solo; printf '# prueba\nver\nchat /pv 15\nesperar 2\nver\ncerrar\ninv\nnoexiste\n' > data/solo/ordenes.txt ) &
+          fi
           while true; do
             sleep 60; now=$(( $(date +%s) - t0 ))
+            traer_ordenes; mostrar_ordenes; revisar_avisos
             [ $(( now % 900 )) -lt 60 ] && bash ../../afk-resumen.sh
             left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
             if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom' 2>/dev/null)" != "0" ]; then echo "set completo a los $now s"; touch ../../set-completo; break; fi
             [ $now -ge $LIMITE ] && { echo "fin de la tanda ($now s)"; break; }
           done
           bash ../../afk-resumen.sh
+          if [ "$MODO_AFK" = prueba ]; then
+            # solo en la prueba (emulador, nada real): que hizo el cliente, para ver por que no avanzo
+            cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a -E '\[PIPELINE\]|\[ChestZones\]|\[ORDEN\]|\[E2E\]|Exception' | grep -v 'estado ' | sed 's/^.*\] \[/[/' | tail -60
+            # donde cae un NullPointerException (solo nombres de metodo y linea, sin codigo)
+            cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a -A14 'Caused by: java.lang.NullPointerException' | grep -a -oE 'at net\.minecadia[A-Za-z0-9_.$]*\([A-Za-z0-9_.]*:[0-9]+\)' | sort | uniq -c | sort -rn | head -12
+            [ "$(psql -At -c 'select count(*) from bom' 2>/dev/null)" != "0" ] || { echo "FALLA: el bot nunca cargo el objetivo (no termino de prepararse)"; exit 1; }
+          fi
 
       - name: Prueba - corte de tanda (guarda, borra todo, recupera y sigue)
         if: env.MODO_AFK == 'prueba'
@@ -400,9 +471,31 @@ jobs:
           [ "$con" -gt 0 ] && [ $(( uso + esp )) -ge "$con" ] || { echo "FALLA: el comprador se conecto sin proxy"; exit 1; }
           grep -aq 'entro bien' /tmp/v.out || { echo "FALLA: la cuenta vigia nunca entro por un proxy"; exit 1; }
           grep -aq '\[PROXY\] .* malo' /tmp/c.out || echo "aviso: el comprador no llego a caerse de ningun proxy en esta prueba"
+          # /pv en vez de cofres: el bot abrio los /pv (lo anota el emulador) y no hay cofres en el mundo
+          pvs=$(grep -a ' pv Solo ' server/plugins/MinecadiaEmu/events.log | awk '$NF != 15' | wc -l)
+          echo "/pv abiertos por el bot: $pvs ($(grep -a ' pv Solo ' server/plugins/MinecadiaEmu/events.log | awk '{print $NF}' | sort -n | uniq -c | tr -s ' ' | tr '\n' ';'))"
+          [ "$pvs" -gt 0 ] || { echo "FALLA: el bot nunca abrio un /pv"; exit 1; }
+          # ordenes a mano: las corrio y contesto
+          grep -a '\[ORDEN\]' /tmp/c.out | sed 's/.*\[ORDEN\]/[ORDEN]/' | head -40
+          grep -aq "\[ORDEN\] ventana 'Vault #15'" /tmp/c.out || { echo "FALLA: la orden 'chat /pv 15' + 'ver' no mostro el /pv 15"; exit 1; }
+          grep -aq "\[ORDEN\] no entiendo 'noexiste'" /tmp/c.out || { echo "FALLA: una orden desconocida no se aviso"; exit 1; }
+
+      - name: Aviso de fin de tanda
+        if: always() && env.MODO_AFK == 'correr'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ESTADO: ${{ job.status }}
+          SIGUE: ${{ (vars.AFK_ON == '1' || env.SEGUIR == '1') && hashFiles('set-completo') == '' }}
+        run: |
+          if [ "$ESTADO" != success ]; then m="FALLO: la tanda termino con estado $ESTADO (mirar los pasos en rojo)"
+          elif [ "$SIGUE" != true ]; then m="FIN: la tanda termino y no hay siguiente (seguir apagado o set completo)"
+          else exit 0; fi
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head avisos --state open --json number -q '.[0].number' 2>/dev/null)
+          [ -n "$pr" ] && gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "AVISO $m (tanda $GITHUB_RUN_ID)" || true
+          echo "$m"
 
       - name: Lanzar la tanda siguiente
-        if: always() && env.MODO_AFK == 'correr' && vars.AFK_ON == '1' && hashFiles('set-completo') == ''
+        if: always() && env.MODO_AFK == 'correr' && (vars.AFK_ON == '1' || env.SEGUIR == '1') && hashFiles('set-completo') == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

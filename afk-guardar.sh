@@ -6,7 +6,7 @@ out=$1
 : "${AFK_CLAVE:?falta AFK_CLAVE}"
 rm -rf estado; mkdir -p estado/solo/logs-anteriores
 pg_dump --clean --if-exists --no-owner --no-privileges > estado/almacen.sql 2>/dev/null || echo "aviso: no se pudo volcar el almacen"
-for f in msa.json cuenta reinicios.log comandos.sha; do [ -f data/solo/$f ] && cp data/solo/$f estado/solo/; done
+for f in msa.json cuenta reinicios.log comandos.sha ordenes.txt.hecho; do [ -f data/solo/$f ] && cp data/solo/$f estado/solo/; done
 # la cuenta vigia (prueba proxys): su login y sus reinicios; las marcas de los proxys para la tanda siguiente
 if [ -d data/vigia ]; then mkdir -p estado/vigia; for f in msa.json cuenta reinicios.log; do [ -f data/vigia/$f ] && cp data/vigia/$f estado/vigia/; done; fi
 [ -f ../../proxy-vigia.log ] && tail -n 200 ../../proxy-vigia.log > estado/solo/logs-anteriores/proxy-vigia.log

@@ -9,6 +9,12 @@ q "select '  falta ' || spec_key || ' ' || applied || '/' || required from bom w
 q "select '  compras ' || status || ': ' || count(*) || ' (' || coalesce(sum(qty*unit_price),0) || ' de plata)' from purchase group by status order by status"
 l=$(q "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'")
 [ -n "$l" ] && echo "  ultimo latido del bot: hace ${l} s"
+# botellas: cuantas quedan (inventario + /pv + cofres) y si todavia faltan runas de botella. Sin botellas y con runas
+# pendientes, una linea "AVISO SIN BOTELLAS" (Claude la busca en el log y le avisa a REIDEN para que cargue mas)
+bot=$(q "select coalesce(sum(split_part(l, E'\t', 2)::int), 0) from snapshot, regexp_split_to_table(contents, E'\n') l where l like 'BOTTLE|%'")
+pend=$(q "select coalesce(sum(qty - made), 0) from rune_order where state not in ('DONE', 'CANCELLED') and made < qty")
+[ -n "$bot" ] && echo "  botellas: $bot, runas pendientes de botellas: ${pend:-0}"
+[ "${bot:-1}" = "0" ] && [ "${pend:-0}" != "0" ] && echo "  AVISO SIN BOTELLAS: faltan ${pend} runas y no queda ninguna botella (cargar mas en /pv 1)"
 if [ -s data/proxys/estado.json ]; then
   python3 - <<'PY' 2>/dev/null
 import json, time
