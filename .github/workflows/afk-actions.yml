@@ -449,7 +449,11 @@ jobs:
             mk=$(psql -At -c "select coalesce(sum(made), 0) from rune_order" 2>/dev/null); firma="${bot:-}-${mk:-}"
             [ "$firma" != "${firma_ant:-}" ] && { firma_ant=$firma; t_cambio=$now; }
             [ $now -ge 900 ] && [ $(( now - ${t_cambio:-0} )) -ge 900 ] && [ "${bot:-0}" != 0 ] && [ "${pend:-0}" != 0 ] && avisar "QUIETO_$(( now / 900 ))" "hace $(( (now - t_cambio) / 60 )) min que no cambian ni las botellas ni las runas (trabado o desconectado)"
-            [ $now -gt 300 ] && ! pgrep -f portablemc > /dev/null && avisar CAIDO "el cliente de Minecraft se cerro"
+            if [ $now -gt 300 ] && ! pgrep -f portablemc > /dev/null && [ -z "${recarga_pid:-}" ]; then
+              # el cliente se cerro: se levanta solo (como mucho uno cada 3 min), sin esperar a nadie
+              avisar "CAIDO_$(( now / 1800 ))" "el cliente de Minecraft se cerro; lo vuelvo a levantar"
+              if [ $(( now - ${ultimo_levante:-0} )) -ge 180 ]; then ultimo_levante=$now; ./bots.sh reiniciar solo > /tmp/levante.log 2>&1 || ./bots.sh arrancar > /tmp/levante.log 2>&1; fi
+            fi
             c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1)
             [ -n "$c" ] && ne=$(grep -ac 'Exception' "$c") && [ "$ne" -gt 200 ] && avisar ERRORES "el cliente lleva $ne errores (Exception) en el log"
           }
