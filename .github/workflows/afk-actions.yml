@@ -16,6 +16,12 @@ name: afk-actions
 #   AFK_SERVER            direccion del server (ej. play.minecadia.com)
 #   AFK_INICIO            el inicio.txt: ir a la base y las 5 zonas de cofres (;cz ...), ;cz pipeline on, ;toggle PipelineBot on
 #   AFK_OBJETIVO          el set (objetivo .set), con #!config budget.cap=... y topes price.*
+# Proxys (opcional; con cualquiera de los dos, la cuenta NUNCA entra al server sin proxy):
+#   AFK_PROXY_FUENTES     URLs de listas de proxys que se actualizan solas (una por linea, p. ej. socks5.txt de un repo)
+#   AFK_PROXIES           proxys propios, uno por linea (socks5://usuario:clave@host:puerto, host:puerto:usuario:clave...)
+#   El vigia (tools/proxy/proxy-vigia.py) los prueba contra el server cada minuto y la cuenta toma el mejor sano;
+#   si se le cae, salta al siguiente. Con una segunda cuenta logueada como "vigia" (modo login, cuenta vigia), esa
+#   cuenta entra de verdad por cada proxy para ver cuales deja pasar el server; nunca compra nada.
 # Variable: AFK_ON = 1 para que siga solo tanda tras tanda; 0 (o borrarla) para que pare al terminar la tanda actual.
 #
 # En este repo los logs son publicos: aca solo se imprime un resumen (progreso del set, compras, plata),
@@ -34,6 +40,11 @@ on:
       horas:
         description: horas de juego en esta tanda (maximo 5.5)
         default: '5.5'
+      cuenta:
+        description: 'solo para login: solo (la que compra) o vigia (la que prueba proxys)'
+        type: choice
+        default: solo
+        options: [solo, vigia]
       set_nuevo:
         description: empezar un set nuevo (borra el progreso guardado del set; el login queda)
         type: boolean
@@ -72,6 +83,9 @@ jobs:
           git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$KIT"
           git -C /tmp/src log -1 --format='kit %h' FETCH_HEAD
           git -C /tmp/src archive FETCH_HEAD deploy/vps | tar x
+          # cuenta vigia (prueba proxys): un rol mas, solo con VIGIA=1 en bots.env; el comprador sigue siendo solo
+          sed -i '/^COMPRADOR=sniper/a [ "${VIGIA:-0}" = 1 ] \&\& ROLES="$ROLES vigia" || true' deploy/vps/bots.sh
+          grep -q 'ROLES="$ROLES vigia"' deploy/vps/bots.sh || { echo "no pude agregar el rol vigia al kit"; exit 1; }
           if [ "$MODO_AFK" = prueba ]; then
             git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$BASE"
             git -C /tmp/src archive FETCH_HEAD tools/MinecadiaEmu | tar x
@@ -111,6 +125,8 @@ jobs:
           echo SIN_SYSTEMD=1 >> config/bots.env
           if [ "$MODO_AFK" = prueba ]; then
             E2E=../../tools/MinecadiaEmu/e2e
+            # prueba: dos clientes (comprador y vigia) mas Spigot en el mismo runner, con menos memoria cada uno
+            sed -i 's/^RAM=.*/RAM=1280m/' config/bots.env
             sed -i -e 's/^SERVER=.*/SERVER=127.0.0.1/' -e 's/^AUTH=.*/AUTH=offline/' -e 's/^CUENTA_SOLO=.*/CUENTA_SOLO=Solo/' \
               -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' config/bots.env
             grep -vE '^(quit|chat /emu dump|wait (60000|100)$)' $E2E/orquestador.txt | sed 's/^cmd ;toggle PipelineBot$/cmd ;toggle PipelineBot on/' > config/inicio.txt
@@ -126,6 +142,9 @@ jobs:
             if [ -s /tmp/control/afk/objetivo.set ]; then cp /tmp/control/afk/objetivo.set config/objetivo.set; echo "objetivo: de la rama de control"; fi
             echo "export AFK_CLAVE=$S_CLAVE" > ../../.clave
           fi
+          # la cuenta vigia solo entra, se queda 2 minutos y sale (el vigilante la vuelve a lanzar con el proximo proxy)
+          printf 'wait 2400\nquit\n' > config/inicio-vigia.txt
+          [ "$MODO_AFK" = login ] && [ "${{ inputs.cuenta }}" = vigia ] && echo VIGIA=1 >> config/bots.env
           echo "config lista: $(wc -l < config/inicio.txt) lineas de inicio, $(grep -cvE '^\s*(#|$)' config/objetivo.set) lineas de objetivo"
 
       - name: Restaurar Minecraft (vanilla, sin nada privado)
@@ -167,7 +186,8 @@ jobs:
             openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AFK_CLAVE -in ../../estado.enc | tar xz
             if [ "${{ inputs.set_nuevo }}" = true ]; then echo "set nuevo: no recupero el almacen (se carga AFK_OBJETIVO de cero)"
             elif [ -s estado/almacen.sql ]; then psql -q -v ON_ERROR_STOP=0 -f estado/almacen.sql > /dev/null 2>&1; fi
-            mkdir -p data/solo; cp -a estado/solo/. data/solo/ 2>/dev/null || true
+            for r in solo vigia; do [ -d estado/$r ] && { mkdir -p data/$r; cp -a estado/$r/. data/$r/; }; done
+            [ -f estado/proxys/cache.tsv ] && { mkdir -p data/proxys; cp estado/proxys/cache.tsv data/proxys/; echo "cache de proxys: $(wc -l < data/proxys/cache.tsv) que ya entraron"; }
             cp estado/tanda ../../tanda-anterior 2>/dev/null || true
             echo "estado recuperado: tanda $(cat estado/tanda 2>/dev/null || echo ?), $(psql -At -c 'select count(*) from bom' 2>/dev/null || echo 0) lineas de set"
             rm -rf estado
@@ -238,12 +258,66 @@ jobs:
       - name: Login Microsoft (una vez)
         if: env.MODO_AFK == 'login'
         working-directory: deploy/vps
+        env:
+          AFK_COOKIES: ${{ secrets.AFK_COOKIES }}
+          AFK_COOKIES_VIGIA: ${{ secrets.AFK_COOKIES_VIGIA }}
         run: |
-          # device code: imprime "CODIGO <xxxx>"; se aprueba una vez en microsoft.com/link con la cuenta del bot.
-          # Hace XBL -> XSTS -> Minecraft aca (red abierta) y deja el msa.json que el kit renueva solo. No imprime tokens.
-          mkdir -p data/solo
-          python3 ../../tools/login/device-login.py --out data/solo/msa.json --timeout 840
-          test -s data/solo/msa.json && echo "login guardado"
+          ROL=${{ inputs.cuenta || 'solo' }}; mkdir -p data/$ROL
+          CK="$AFK_COOKIES"; [ "$ROL" = vigia ] && [ -n "$AFK_COOKIES_VIGIA" ] && CK="$AFK_COOKIES_VIGIA"
+          if [ -s /tmp/control/afk/login/$ROL.ms ]; then
+            # token de Microsoft ya aprobado a mano (codigo de microsoft.com/link) que dejo Claude en la rama de control privada
+            python3 ../../tools/login/cookie-login.py --ms-refresh /tmp/control/afk/login/$ROL.ms --out data/$ROL/msa.json > /tmp/l.log 2>&1; rc=$?
+            grep -E '^(login|token de)' /tmp/l.log; [ $rc = 0 ] || { tail -1 /tmp/l.log | cut -c1-160; exit 1; }
+          fi
+          if [ ! -s data/$ROL/msa.json ] && [ -n "$CK" ]; then
+            # intento con las cookies de la sesion de Microsoft (sin clave); si no alcanzan, cae al device code
+            umask 077; printf '%s\n' "$CK" > /tmp/ck.txt
+            python3 ../../tools/login/cookie-login.py --cookies /tmp/ck.txt --out data/$ROL/msa.json --timeout 300 || echo "las cookies no alcanzaron: voy al codigo"
+            rm -f /tmp/ck.txt
+          fi
+          if [ ! -s data/$ROL/msa.json ]; then
+            # device code: imprime una sola linea "CODIGO <xxxx>"; Claude la lee del log y te la pasa, vos aprobas una vez
+            python3 ../../tools/login/device-login.py --out data/$ROL/msa.json --timeout 840
+          fi
+          test -s data/$ROL/msa.json && echo "login guardado para $ROL"
+          # guardar el login en el estado cifrado aunque esta sea solo la tanda de login
+          . ../../.clave 2>/dev/null || true
+          if [ -n "${AFK_CLAVE:-}" ]; then bash ../../afk-guardar.sh ../../estado.enc 2>&1 | grep -i login || true; fi
+
+      - name: Proxys (vigia)
+        if: env.MODO_AFK != 'login'
+        working-directory: deploy/vps
+        env:
+          AFK_PROXIES: ${{ secrets.AFK_PROXIES }}
+          AFK_PROXY_FUENTES: ${{ secrets.AFK_PROXY_FUENTES || vars.AFK_PROXY_FUENTES }}
+          AFK_PROXY_TIPO: ${{ vars.AFK_PROXY_TIPO }}
+        run: |
+          D=$PWD/data/proxys; mkdir -p $D; chmod 700 $D
+          if [ "$MODO_AFK" = prueba ]; then
+            # proxys de prueba: uno con clave que corta cada sesion a los 150 s, uno http sano, uno muerto y uno
+            # que llega por una lista servida por http (como un repo de proxys)
+            P=../../tools/proxy
+            nohup python3 $P/proxy-prueba.py 31080 socks5 --user u --clave c --echa-a 150 > /dev/null 2>&1 &
+            nohup python3 $P/proxy-prueba.py 31081 http > /dev/null 2>&1 &
+            nohup python3 $P/proxy-prueba.py 31082 socks5 > /dev/null 2>&1 &
+            mkdir -p /tmp/lista; printf '127.0.0.1:31082\n10.255.255.1:1080\n' > /tmp/lista/socks5.txt
+            (cd /tmp/lista && nohup python3 -m http.server 31800 > /dev/null 2>&1 &)
+            AFK_PROXIES=$'socks5://u:c@127.0.0.1:31080\nhttp://127.0.0.1:31081\nsocks5://127.0.0.1:31083'
+            AFK_PROXY_FUENTES=http://127.0.0.1:31800/socks5.txt
+            SERVER=127.0.0.1:25565
+            echo MINECADIA_PROXY_TUNNEL_LOCAL=1 >> $GITHUB_ENV
+            echo -e "VIGIA=1\nCUENTA_VIGIA=Vigia" >> config/bots.env
+          else
+            if [ -z "$AFK_PROXIES" ] && [ -z "$AFK_PROXY_FUENTES" ]; then echo "sin proxys: la cuenta entra con la IP de GitHub"; exit 0; fi
+            SERVER=$(grep '^SERVER=' config/bots.env | cut -d= -f2-)
+            if [ -s data/vigia/msa.json ]; then echo VIGIA=1 >> config/bots.env; echo "cuenta vigia: si"; else echo "cuenta vigia: no (modo login, cuenta vigia, para sumarla)"; fi
+          fi
+          export AFK_PROXIES AFK_PROXY_FUENTES
+          nohup python3 ../../tools/proxy/proxy-vigia.py --dir $D --server "$SERVER" > ../../proxy-vigia.log 2>&1 &
+          echo "MINECADIA_PROXY_POOL=$D" >> $GITHUB_ENV
+          for i in $(seq 1 60); do [ -s $D/comprador.tsv ] && break; sleep 10; done
+          grep -m1 '^vigia:' ../../proxy-vigia.log || true
+          [ -s $D/comprador.tsv ] && echo "proxys listos" || echo "AVISO: todavia ningun proxy sano; la cuenta espera sin conectarse"
 
       - name: Correr el bot
         if: env.MODO_AFK != 'login'
@@ -305,8 +379,8 @@ jobs:
         if: always() && env.MODO_AFK != 'prueba' && hashFiles('estado.enc') != ''
         uses: actions/cache/save@v4
         with:
-          path: estado.enc
           key: afk-estado-real-${{ github.run_id }}-${{ github.run_attempt }}
+          path: estado.enc
 
       - name: Prueba - chequeo del emulador
         if: env.MODO_AFK == 'prueba'
@@ -314,6 +388,18 @@ jobs:
           echo stop > server/console; for i in $(seq 1 60); do pgrep -f spigot-1.8.8.jar >/dev/null || break; sleep 2; done
           test -f set-completo || { echo "FALLA: el set no se completo"; exit 1; }
           E2E_ORCH=Solo E2E_BUYER=Solo E2E_CLIENTS=solo python3 tools/MinecadiaEmu/e2e/check.py server/plugins/MinecadiaEmu deploy/vps/config/objetivo.set
+          # proxys: cada conexion del comprador paso por un proxy (o espero sin conectarse), y el vigia entro por alguno
+          # el corte de tanda borra data/solo y solo recupera el ultimo .out (logs-anteriores): junto todos los .out que haya
+          find deploy/vps/data/solo -name '*.out' -exec cat {} + > /tmp/c.out 2>/dev/null || true
+          find deploy/vps/data/vigia -name '*.out' -exec cat {} + > /tmp/v.out 2>/dev/null || true
+          echo "logs: comprador $(wc -l < /tmp/c.out) lineas, vigia $(wc -l < /tmp/v.out) lineas"
+          con=$(grep -ac 'Connecting to' /tmp/c.out || true); uso=$(grep -ac '\[PROXY\] uso' /tmp/c.out || true); esp=$(grep -ac 'ningun proxy sano' /tmp/c.out || true)
+          echo "comprador: $con conexiones, $uso por proxy, $esp esperando, $(grep -ac '\[PROXY\] .* malo' /tmp/c.out) proxys caidos, $(grep -ac 'entro bien' /tmp/c.out) entradas buenas"
+          echo "vigia: $(grep -ac '\[PROXY\] uso' /tmp/v.out) conexiones, $(grep -ac 'entro bien' /tmp/v.out) entradas buenas, $(grep -ac '\[PROXY\] .* malo' /tmp/v.out) caidos"
+          grep -m3 'vigia:' proxy-vigia.log || true
+          [ "$con" -gt 0 ] && [ $(( uso + esp )) -ge "$con" ] || { echo "FALLA: el comprador se conecto sin proxy"; exit 1; }
+          grep -aq 'entro bien' /tmp/v.out || { echo "FALLA: la cuenta vigia nunca entro por un proxy"; exit 1; }
+          grep -aq '\[PROXY\] .* malo' /tmp/c.out || echo "aviso: el comprador no llego a caerse de ningun proxy en esta prueba"
 
       - name: Lanzar la tanda siguiente
         if: always() && env.MODO_AFK == 'correr' && vars.AFK_ON == '1' && hashFiles('set-completo') == ''
