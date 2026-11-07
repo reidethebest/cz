@@ -370,6 +370,11 @@ class Vigia:
         vigia = sorted(sanos, key=lambda px: (max(ultima(buenos, px["id"]), ultima(malos_v, px["id"])), self.estado[px["id"]]["ms"]))
         escribir(os.path.join(self.d, "comprador.tsv"), comprador[:200])
         escribir(os.path.join(self.d, "vigia.tsv"), vigia[:200])
+        # ranking legible (privado, en el dir de datos): orden del comprador con su ping y estabilidad
+        with open(os.path.join(self.d, "ranking.tsv"), "w", encoding="utf-8") as f:
+            os.chmod(f.name, 0o600)
+            for i, px in enumerate(comprador[:200], 1):
+                f.write("%d\t%s://%s:%s\t%s ms\testable %d\n" % (i, px["tipo"], px["host"], px["port"], self.estado[px["id"]]["ms"], estable(px["id"])))
         hora = now - 3600
         st = dict(at=now, candidatos=len(self.cand), probados=len(prueba), total=len(self.cand), sanos=len(sanos),
                   comprador=len(comprador), cache=len(self.cache), fuentes_ok=self.fuentes_ok, fuentes=len(self.fuentes),
