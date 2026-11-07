@@ -1,0 +1,26 @@
+name: proxys-ranking
+# Prueba los proxys de la lista (rama de control) contra el server y deja el ranking cifrado con la clave publica
+# tools/proxy/ranking-cert.pem: en el log publico solo sale el bloque cifrado, Claude lo descifra con la privada.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ranking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ranking
+        env:
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+          AFK_CONTROL: claude/project-thread-9ah29y
+        run: |
+          H="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          d=$(mktemp -d); git -C $d init -q
+          git -C $d -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL"
+          S=$(git -C $d show FETCH_HEAD:afk/server.txt | head -1 | tr -d '[:space:]')
+          export AFK_PROXY_FUENTES=$(git -C $d show FETCH_HEAD:afk/proxy-fuentes.txt | grep -E '^https?://')
+          rm -rf $d; D=$(mktemp -d)
+          AFK_PROXY_LOTE=5000 python3 tools/proxy/proxy-vigia.py --dir $D --server "$S" --una-vez 2>&1 | grep -o "[0-9]* candidatos.*"
+          { echo "# ranking $(date -u +%F' '%H:%M) UTC, desde un runner de GitHub"; head -40 $D/ranking.tsv; } | openssl cms -encrypt -aes256 -outform PEM tools/proxy/ranking-cert.pem
