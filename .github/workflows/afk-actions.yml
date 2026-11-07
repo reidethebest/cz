@@ -129,8 +129,9 @@ jobs:
             sed -i 's/^RAM=.*/RAM=1280m/' config/bots.env
             sed -i -e 's/^SERVER=.*/SERVER=127.0.0.1/' -e 's/^AUTH=.*/AUTH=offline/' -e 's/^CUENTA_SOLO=.*/CUENTA_SOLO=Solo/' \
               -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' config/bots.env
-            grep -vE '^(quit|chat /emu dump|wait (60000|100)$)' $E2E/orquestador.txt | sed 's/^cmd ;toggle PipelineBot$/cmd ;toggle PipelineBot on/' > config/inicio.txt
-            cp $E2E/target-clon-leggings.tsv config/objetivo.set
+            # como en el server real: sin cofres, todo en /pv 1..15 (PlayerVaults); el bot los abre por comando
+            printf 'wait 200\ncmd ;toggle PipelineBot on\n' > config/inicio.txt
+            { cat $E2E/target-clon-leggings.tsv; echo '#!config pv=1-2:BOTTLES,3-10:RUNES_OUT,11-12:DELIVERY,13:STAGING,14-15:STORAGE'; } > config/objetivo.set
             echo "export AFK_CLAVE=${S_CLAVE:-prueba-sin-clave}" > ../../.clave
           else
             if [ "$MODO_AFK" != login ]; then
@@ -241,6 +242,16 @@ jobs:
           mkdir -p server/plugins/MinecadiaEmu; cp spigot/spigot-1.8.8.jar server/; cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
           E2E=tools/MinecadiaEmu/e2e
           sed -E 's/^(\s+)Sniper:/\1Solo:/; s/players: \[Sniper\]/players: [Solo]/' $E2E/config-clon-leggings.yml > server/plugins/MinecadiaEmu/config.yml
+          # sin cofres en el mundo: las botellas y la basura de la base van a /pv 1 y /pv 14 (base.fill queda para check.py)
+          python3 - server/plugins/MinecadiaEmu/config.yml <<'PY'
+          import re, sys
+          p = sys.argv[1]; s = open(p).read()
+          fill = lambda role: (re.search(r"\n    " + role + r":\s*(\[[^\]]*\])", s) or [None, "[]"])[1]
+          pv = '\npv:\n  count: 15\n  size: 54\n  fill:\n    "1": %s\n    "14": %s\n' % (fill("BOTTLES"), fill("STORAGE"))
+          s = re.sub(r"(\n  chests: )\[[^\]]*\]", r"\1[]", s, count=1) + pv
+          open(p, "w").write(s)
+          PY
+          grep -A5 '^pv:' server/plugins/MinecadiaEmu/config.yml
           cd server; echo "eula=true" > eula.txt
           printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\nmax-players=10\n' > server.properties
           mkfifo console; nohup sleep infinity > console 2>/dev/null &
@@ -322,8 +333,28 @@ jobs:
       - name: Correr el bot
         if: env.MODO_AFK != 'login'
         working-directory: deploy/vps
+        env:
+          PIPELINE_ORDENES: ${{ github.workspace }}/deploy/vps/data/solo/ordenes.txt
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
         run: |
           set +e
+          # ordenes a mano: afk/ordenes.txt de la rama de control privada, releida cada minuto; el bot corre cada linea
+          # nueva una vez (ver Ordenes.kt) y aca se muestran sus respuestas "[ORDEN]"
+          H="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          traer_ordenes() {
+            [ "$MODO_AFK" = prueba ] && return
+            d=$(mktemp -d); git -C "$d" init -q
+            if git -C "$d" -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null \
+               && git -C "$d" show FETCH_HEAD:afk/ordenes.txt > "$d/o" 2>/dev/null; then mkdir -p data/solo; cp "$d/o" data/solo/ordenes.txt; fi
+            rm -rf "$d"
+          }
+          vistas=0
+          mostrar_ordenes() {
+            r=$(cat data/solo/logs/cliente-*.out 2>/dev/null | grep -a '\[ORDEN\]' | sed 's/.*\[ORDEN\]/[ORDEN]/')
+            n=$(printf '%s' "$r" | grep -c . || true)
+            [ "$n" -gt "$vistas" ] && printf '%s\n' "$r" | tail -n +$((vistas + 1)); [ "$n" -lt "$vistas" ] || vistas=$n
+          }
+          traer_ordenes
           HORAS='${{ inputs.horas || '5.5' }}'
           if [ "$MODO_AFK" = prueba ]; then HORAS=0.12; fi
           LIMITE=$(python3 -c "print(int(min(float('$HORAS'), 5.5) * 3600))")
@@ -331,8 +362,13 @@ jobs:
           ./bots.sh arrancar > /dev/null 2>&1 || { echo "no arranco: ./bots.sh revisar marco algo (mira arriba)"; exit 1; }
           echo "bot prendido por $LIMITE s"
           t0=$(date +%s)
+          if [ "$MODO_AFK" = prueba ]; then
+            # prueba de ordenes: se escriben con el bot andando; abre un /pv a mano, mira y cierra
+            ( sleep 150; mkdir -p data/solo; printf '# prueba\nver\nchat /pv 15\nesperar 2\nver\ncerrar\ninv\nnoexiste\n' > data/solo/ordenes.txt ) &
+          fi
           while true; do
             sleep 60; now=$(( $(date +%s) - t0 ))
+            traer_ordenes; mostrar_ordenes
             [ $(( now % 900 )) -lt 60 ] && bash ../../afk-resumen.sh
             left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
             if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom' 2>/dev/null)" != "0" ]; then echo "set completo a los $now s"; touch ../../set-completo; break; fi
@@ -400,6 +436,14 @@ jobs:
           [ "$con" -gt 0 ] && [ $(( uso + esp )) -ge "$con" ] || { echo "FALLA: el comprador se conecto sin proxy"; exit 1; }
           grep -aq 'entro bien' /tmp/v.out || { echo "FALLA: la cuenta vigia nunca entro por un proxy"; exit 1; }
           grep -aq '\[PROXY\] .* malo' /tmp/c.out || echo "aviso: el comprador no llego a caerse de ningun proxy en esta prueba"
+          # /pv en vez de cofres: el bot abrio los /pv (lo anota el emulador) y no hay cofres en el mundo
+          pvs=$(grep -a ' pv Solo ' server/plugins/MinecadiaEmu/events.log | awk '$NF != 15' | wc -l)
+          echo "/pv abiertos por el bot: $pvs ($(grep -a ' pv Solo ' server/plugins/MinecadiaEmu/events.log | awk '{print $NF}' | sort -n | uniq -c | tr -s ' ' | tr '\n' ';'))"
+          [ "$pvs" -gt 0 ] || { echo "FALLA: el bot nunca abrio un /pv"; exit 1; }
+          # ordenes a mano: las corrio y contesto
+          grep -a '\[ORDEN\]' /tmp/c.out | sed 's/.*\[ORDEN\]/[ORDEN]/' | head -40
+          grep -aq "\[ORDEN\] ventana 'Vault #15'" /tmp/c.out || { echo "FALLA: la orden 'chat /pv 15' + 'ver' no mostro el /pv 15"; exit 1; }
+          grep -aq "\[ORDEN\] no entiendo 'noexiste'" /tmp/c.out || { echo "FALLA: una orden desconocida no se aviso"; exit 1; }
 
       - name: Lanzar la tanda siguiente
         if: always() && env.MODO_AFK == 'correr' && vars.AFK_ON == '1' && hashFiles('set-completo') == ''
