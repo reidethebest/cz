@@ -358,6 +358,7 @@ jobs:
             d=$(mktemp -d); git -C "$d" init -q
             if git -C "$d" -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null; then
               git -C "$d" show FETCH_HEAD:afk/ordenes.txt > "$d/o" 2>/dev/null && { mkdir -p data/solo; cp "$d/o" data/solo/ordenes.txt; }
+              reporte_min=$(git -C "$d" show FETCH_HEAD:afk/reporte.txt 2>/dev/null | head -1 | tr -dc 0-9); reporte_min=${reporte_min:-4}
               # recarga en caliente: afk/recarga.txt cambio -> jar nuevo (en segundo plano, el bot sigue) y config nueva,
               # despues reinicio solo el cliente (~1 min en vez de una tanda nueva de ~6 min)
               git -C "$d" show FETCH_HEAD:afk/recarga.txt > "$d/r" 2>/dev/null || : > "$d/r"
@@ -410,16 +411,34 @@ jobs:
             nsn=$(psql -At -c "select count(*) from snapshot" 2>/dev/null)
             if [ $now -ge 600 ] && [ -s data/proxys/estado.json ]; then
               px=$(python3 -c "import json;e=json.load(open('data/proxys/estado.json'));print('%d candidatos, %d sanos, %d para usar, mediana %s ms' % (e['candidatos'], e['sanos'], e['comprador'], e['ms_mediana']))" 2>/dev/null)
-              ul=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
+              ul=$(psql -At -c "select ((extract(epoch from now()) * 1000)::bigint - max(at)) / 1000 from event" 2>/dev/null)
               avisar ARRANCO "10 min andando; proxys: ${px:-sin datos}; ultimo latido hace ${ul:-?} s; botellas ${bot:-?}, runas que faltan ${pend:-?}, ${nsn:-0} cofres/pv mirados"
+            fi
+            # reporte cada N min (afk/reporte.txt en la rama de control, en minutos; 0 = apagado): botellas, runas al
+            # 100% por linea de la lista, si avanza, y cuanto falta al ritmo de los ultimos minutos
+            cada=$(( ${reporte_min:-4} * 60 ))
+            if [ "$cada" -gt 0 ] && [ $now -ge 240 ] && [ $(( now - ${ult_rep:-0} )) -ge "$cada" ]; then
+              made=$(psql -At -c "select coalesce(sum(least(made, qty)), 0) from rune_order" 2>/dev/null); tot=$(psql -At -c "select coalesce(sum(qty), 0) from rune_order" 2>/dev/null)
+              lineas=$(psql -At -F ' ' -c "select split_part(spec_key, '|', 2) || ' ' || split_part(spec_key, '|', 3) || ': ' || least(made, qty) || '/' || qty from rune_order order by spec_key" 2>/dev/null | tr '\n' ';' | sed 's/;$//; s/;/; /g')
+              db=$(( ${bot_ant:-${bot:-0}} - ${bot:-0} )); dm=$(( ${made:-0} - ${made_ant:-${made:-0}} ))
+              if [ "${made_ini:-}" = "" ]; then made_ini=${made:-0}; t_ini=$now; fi
+              ritmo=""; falta=$(( ${tot:-0} - ${made:-0} ))
+              hechas=$(( ${made:-0} - made_ini )); mins=$(( (now - t_ini) / 60 ))
+              if [ "$hechas" -gt 0 ] && [ "$mins" -gt 0 ]; then ritmo="; ritmo ${hechas} runas en ${mins} min, faltan ~$(( falta * mins / hechas )) min"; else ritmo="; todavia sin runas nuevas para estimar"; fi
+              act="quieto"; { [ "$db" -gt 0 ] || [ "$dm" -gt 0 ]; } && act="avanzando"
+              ul2=$(psql -At -c "select ((extract(epoch from now()) * 1000)::bigint - max(at)) / 1000 from event" 2>/dev/null)
+              avisar "REPORTE_$now" "$act: botellas ${bot:-?} (-${db} desde el ultimo), runas al 100% ${made:-0}/${tot:-0} (+${dm})${ritmo}; ultimo evento hace ${ul2:-?} s | ${lineas}"
+              bot_ant=${bot:-0}; made_ant=${made:-0}; ult_rep=$now
             fi
             # cada 30 min un estado con numeros (botellas, runas que faltan): se ve en vivo sin esperar el fin de la tanda
             [ $now -ge 1200 ] && [ $(( now % 1800 )) -lt 60 ] && avisar ESTADO_$((now / 1800)) "botellas ${bot:-?}, runas que faltan ${pend:-?} de ${nro:-?} pedidas, ${nsn:-0} cofres/pv mirados"
             # sin botellas solo despues de mirar los /pv (al principio el indice esta vacio y daria 0)
             [ "${nsn:-0}" -gt 0 ] && [ $now -ge 600 ] && [ "$bot" = 0 ] && [ -n "$pend" ] && [ "$pend" != 0 ] && avisar SIN_BOTELLAS "no quedan botellas y faltan $pend runas (cargar mas en /pv 1)"
             [ "${nro:-0}" != 0 ] && [ "$pend" = 0 ] && avisar RUNAS_LISTAS "todas las runas pedidas estan al 100% y guardadas"
-            l=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
-            [ -n "$l" ] && [ "$l" -gt 900 ] && avisar QUIETO "el bot no da senales hace $((l / 60)) min (desconectado o trabado)"
+            # quieto: ni botellas ni runas cambiaron en 15 min y todavia hay de las dos
+            mk=$(psql -At -c "select coalesce(sum(made), 0) from rune_order" 2>/dev/null); firma="${bot:-}-${mk:-}"
+            [ "$firma" != "${firma_ant:-}" ] && { firma_ant=$firma; t_cambio=$now; }
+            [ $now -ge 900 ] && [ $(( now - ${t_cambio:-0} )) -ge 900 ] && [ "${bot:-0}" != 0 ] && [ "${pend:-0}" != 0 ] && avisar "QUIETO_$(( now / 900 ))" "hace $(( (now - t_cambio) / 60 )) min que no cambian ni las botellas ni las runas (trabado o desconectado)"
             [ $now -gt 300 ] && ! pgrep -f portablemc > /dev/null && avisar CAIDO "el cliente de Minecraft se cerro"
             c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1)
             [ -n "$c" ] && ne=$(grep -ac 'Exception' "$c") && [ "$ne" -gt 200 ] && avisar ERRORES "el cliente lleva $ne errores (Exception) en el log"
