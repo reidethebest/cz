@@ -101,8 +101,8 @@ jobs:
           [ -n "$S_CLAVE" ] || S_CLAVE=$(printf 'afk-estado:%s' "$S_TOK" | sha256sum | cut -c1-64)
           # server / inicio de la rama de control privada si no estan como secrets
           [ -n "$S_SERVER" ] || S_SERVER=$(head -1 /tmp/control/afk/server.txt 2>/dev/null | tr -d '[:space:]')
-          [ -n "$S_INICIO" ] || S_INICIO=$(cat /tmp/control/afk/inicio.txt 2>/dev/null)
-          [ -n "$S_OBJETIVO" ] || [ ! -s /tmp/control/afk/objetivo.set ] || S_OBJETIVO=$(cat /tmp/control/afk/objetivo.set)
+          [ -n "$S_INICIO" ] || S_INICIO=$(cat /tmp/control/afk/inicio.txt 2>/dev/null || true)
+          [ -n "$S_OBJETIVO" ] || [ ! -s /tmp/control/afk/objetivo.set ] || S_OBJETIVO=$(cat /tmp/control/afk/objetivo.set || true)
           cp config/bots.env.example config/bots.env
           BASE=$(sed -n 2p ../../afk-run.txt | tr -d '[:space:]'); MOD=$(sed -n 3p ../../afk-run.txt | tr -d '[:space:]')
           sed -i -e 's/^MODO=.*/MODO=nativo/' -e 's/^UNA_CUENTA=.*/UNA_CUENTA=1/' -e 's/^PG_PASS=.*/PG_PASS=pipeline/' \
