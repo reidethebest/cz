@@ -56,7 +56,9 @@ concurrency:
 
 permissions:
   contents: read
-  actions: write   # para lanzar la tanda siguiente
+  actions: write          # para lanzar la tanda siguiente
+  pull-requests: write    # avisos: un comentario en el PR "avisos" despierta a Claude
+  issues: write
 
 jobs:
   tanda:
@@ -94,6 +96,7 @@ jobs:
           if [ "$MODO_AFK" != prueba ] && [ -n "$AFK_CONTROL" ]; then
             if git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null; then
               mkdir -p /tmp/control; git -C /tmp/src archive FETCH_HEAD afk 2>/dev/null | tar x -C /tmp/control 2>/dev/null || true
+              [ "$(head -1 /tmp/control/afk/seguir.txt 2>/dev/null | tr -d '[:space:]')" = 1 ] && echo "SEGUIR=1" >> "$GITHUB_ENV"
               echo "control: $(git -C /tmp/src log -1 --format=%h FETCH_HEAD), objetivo $([ -s /tmp/control/afk/objetivo.set ] && echo si || echo no), comandos $([ -s /tmp/control/afk/comandos.txt ] && echo si || echo no)"
             else echo "control: sin rama de control, uso los secrets"; fi
           fi
@@ -339,6 +342,7 @@ jobs:
         env:
           PIPELINE_ORDENES: ${{ github.workspace }}/deploy/vps/data/solo/ordenes.txt
           TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+          GHT: ${{ github.token }}
         run: |
           set +e
           # ordenes a mano: afk/ordenes.txt de la rama de control privada, releida cada minuto; el bot corre cada linea
@@ -357,6 +361,27 @@ jobs:
             n=$(printf '%s' "$r" | grep -c . || true)
             [ "$n" -gt "$vistas" ] && printf '%s\n' "$r" | tail -n +$((vistas + 1)); [ "$n" -lt "$vistas" ] || vistas=$n
           }
+          # avisos: un comentario en el PR de la rama "avisos" (solo numeros, nada privado: el repo es publico).
+          # Cada aviso sale una vez por tanda. Claude esta suscripto a ese PR y se despierta con el comentario.
+          avisar() {
+            [ "$MODO_AFK" = correr ] || { echo "[AVISO] $2"; return; }
+            grep -qx "$1" /tmp/avisados 2>/dev/null && return
+            echo "$1" >> /tmp/avisados; echo "[AVISO] $2"
+            pr=$(GH_TOKEN=$GHT gh pr list --repo "$GITHUB_REPOSITORY" --head avisos --state open --json number -q '.[0].number' 2>/dev/null)
+            [ -n "$pr" ] && GH_TOKEN=$GHT gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "AVISO $1: $2 (tanda $GITHUB_RUN_ID, minuto $((now / 60)))" > /dev/null 2>&1
+          }
+          revisar_avisos() {
+            bot=$(psql -At -c "select coalesce(sum(split_part(l, E'\t', 2)::int), 0) from snapshot, regexp_split_to_table(contents, E'\n') l where l like 'BOTTLE|%'" 2>/dev/null)
+            pend=$(psql -At -c "select coalesce(sum(qty - made), 0) from rune_order where state not in ('DONE', 'CANCELLED') and made < qty" 2>/dev/null)
+            nro=$(psql -At -c "select count(*) from rune_order" 2>/dev/null)
+            [ "$bot" = 0 ] && [ -n "$pend" ] && [ "$pend" != 0 ] && avisar SIN_BOTELLAS "no quedan botellas y faltan $pend runas (cargar mas en /pv 1)"
+            [ "${nro:-0}" != 0 ] && [ "$pend" = 0 ] && avisar RUNAS_LISTAS "todas las runas pedidas estan al 100% y guardadas"
+            l=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
+            [ -n "$l" ] && [ "$l" -gt 900 ] && avisar QUIETO "el bot no da senales hace $((l / 60)) min (desconectado o trabado)"
+            [ $now -gt 300 ] && ! pgrep -f portablemc > /dev/null && avisar CAIDO "el cliente de Minecraft se cerro"
+            c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1)
+            [ -n "$c" ] && ne=$(grep -ac 'Exception' "$c") && [ "$ne" -gt 200 ] && avisar ERRORES "el cliente lleva $ne errores (Exception) en el log"
+          }
           traer_ordenes
           HORAS='${{ inputs.horas || '5.5' }}'
           if [ "$MODO_AFK" = prueba ]; then HORAS=0.12; fi
@@ -371,7 +396,7 @@ jobs:
           fi
           while true; do
             sleep 60; now=$(( $(date +%s) - t0 ))
-            traer_ordenes; mostrar_ordenes
+            traer_ordenes; mostrar_ordenes; revisar_avisos
             [ $(( now % 900 )) -lt 60 ] && bash ../../afk-resumen.sh
             left=$(psql -At -c "select count(*) from bom where applied < required" 2>/dev/null)
             if [ "$left" = "0" ] && [ "$(psql -At -c 'select count(*) from bom' 2>/dev/null)" != "0" ]; then echo "set completo a los $now s"; touch ../../set-completo; break; fi
@@ -453,8 +478,22 @@ jobs:
           grep -aq "\[ORDEN\] ventana 'Vault #15'" /tmp/c.out || { echo "FALLA: la orden 'chat /pv 15' + 'ver' no mostro el /pv 15"; exit 1; }
           grep -aq "\[ORDEN\] no entiendo 'noexiste'" /tmp/c.out || { echo "FALLA: una orden desconocida no se aviso"; exit 1; }
 
+      - name: Aviso de fin de tanda
+        if: always() && env.MODO_AFK == 'correr'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ESTADO: ${{ job.status }}
+          SIGUE: ${{ (vars.AFK_ON == '1' || env.SEGUIR == '1') && hashFiles('set-completo') == '' }}
+        run: |
+          if [ "$ESTADO" != success ]; then m="FALLO: la tanda termino con estado $ESTADO (mirar los pasos en rojo)"
+          elif [ "$SIGUE" != true ]; then m="FIN: la tanda termino y no hay siguiente (seguir apagado o set completo)"
+          else exit 0; fi
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head avisos --state open --json number -q '.[0].number' 2>/dev/null)
+          [ -n "$pr" ] && gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "AVISO $m (tanda $GITHUB_RUN_ID)" || true
+          echo "$m"
+
       - name: Lanzar la tanda siguiente
-        if: always() && env.MODO_AFK == 'correr' && vars.AFK_ON == '1' && hashFiles('set-completo') == ''
+        if: always() && env.MODO_AFK == 'correr' && (vars.AFK_ON == '1' || env.SEGUIR == '1') && hashFiles('set-completo') == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
