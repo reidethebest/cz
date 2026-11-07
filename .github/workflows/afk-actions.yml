@@ -107,8 +107,16 @@ jobs:
           S_INICIO: ${{ secrets.AFK_INICIO }}
           S_OBJETIVO: ${{ secrets.AFK_OBJETIVO }}
           S_CLAVE: ${{ secrets.AFK_CLAVE }}
+          S_TOK: ${{ secrets.MINECADIA_READ_TOKEN }}
         run: |
           umask 077
+          # sin secret AFK_CLAVE: la clave del estado cifrado sale del secret MINECADIA_READ_TOKEN (solo Actions la conoce).
+          # Ojo: si despues se crea AFK_CLAVE, el estado viejo no se puede abrir y hay que loguear de nuevo.
+          [ -n "$S_CLAVE" ] || S_CLAVE=$(printf 'afk-estado:%s' "$S_TOK" | sha256sum | cut -c1-64)
+          # server / inicio de la rama de control privada si no estan como secrets
+          [ -n "$S_SERVER" ] || S_SERVER=$(head -1 /tmp/control/afk/server.txt 2>/dev/null | tr -d '[:space:]')
+          [ -n "$S_INICIO" ] || S_INICIO=$(cat /tmp/control/afk/inicio.txt 2>/dev/null)
+          [ -n "$S_OBJETIVO" ] || [ ! -s /tmp/control/afk/objetivo.set ] || S_OBJETIVO=$(cat /tmp/control/afk/objetivo.set)
           cp config/bots.env.example config/bots.env
           BASE=$(sed -n 2p ../../afk-run.txt | tr -d '[:space:]'); MOD=$(sed -n 3p ../../afk-run.txt | tr -d '[:space:]')
           sed -i -e 's/^MODO=.*/MODO=nativo/' -e 's/^UNA_CUENTA=.*/UNA_CUENTA=1/' -e 's/^PG_PASS=.*/PG_PASS=pipeline/' \
@@ -125,7 +133,9 @@ jobs:
             cp $E2E/target-clon-leggings.tsv config/objetivo.set
             echo "export AFK_CLAVE=${S_CLAVE:-prueba-sin-clave}" > ../../.clave
           else
-            for v in S_SERVER S_INICIO S_OBJETIVO S_CLAVE; do [ -n "${!v}" ] || { echo "falta el secret ${v/S_/AFK_}"; exit 1; }; done
+            if [ "$MODO_AFK" != login ]; then
+              for v in S_SERVER S_INICIO S_OBJETIVO; do [ -n "${!v}" ] || { echo "falta ${v/S_/AFK_} (secret o rama de control)"; exit 1; }; done
+            fi
             sed -i "s#^SERVER=.*#SERVER=$S_SERVER#" config/bots.env
             printf '%s\n' "$S_INICIO" > config/inicio.txt
             printf '%s\n' "$S_OBJETIVO" > config/objetivo.set
