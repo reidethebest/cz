@@ -257,7 +257,7 @@ jobs:
           if [ -n "$CK" ]; then
             # login con las cookies de la sesion de Microsoft (sin clave): deja msa.json que el kit renueva solo
             umask 077; printf '%s\n' "$CK" > /tmp/ck.txt
-            if python3 ../../tools/login/cookie-login.py --cookies /tmp/ck.txt --out data/$ROL/msa.json --timeout 300; then
+            if python3 ../../tools/login/cookie-login.py --cookies /tmp/ck.txt --out data/$ROL/msa.json --timeout 600; then
               rm -f /tmp/ck.txt; cp data/$ROL/msa.json /tmp/msa-$ROL.json 2>/dev/null || true
             else
               rm -f /tmp/ck.txt
