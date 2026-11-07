@@ -370,6 +370,9 @@ jobs:
                 echo "recarga pedida ($rs)"
                 ( set +e
                   if [ -n "$rb$rm_" ]; then
+                    # build-jar.sh lee config/bots.env con set -a y pisa las variables del entorno: hay que cambiarlas ahi
+                    [ -n "$rb" ] && sed -i "s#^RAMA_BASE=.*#RAMA_BASE=$rb#" config/bots.env
+                    [ -n "$rm_" ] && sed -i "s#^RAMAS_MODULOS=.*#RAMAS_MODULOS=$rm_#" config/bots.env
                     env ${rb:+RAMA_BASE=$rb} ${rm_:+RAMAS_MODULOS=$rm_} GITHUB_TOKEN="$TOKEN" ./build-jar.sh > /tmp/recarga/jar.log 2>&1 || { echo FALLO_JAR > /tmp/recarga/fin; exit; }
                   fi
                   [ -s /tmp/recarga/afk/inicio.txt ] && cp /tmp/recarga/afk/inicio.txt config/inicio.txt
