@@ -394,8 +394,8 @@ jobs:
           HORAS='${{ inputs.horas || '5.5' }}'
           if [ "$MODO_AFK" = prueba ]; then HORAS=0.12; fi
           LIMITE=$(python3 -c "print(int(min(float('$HORAS'), 5.5) * 3600))")
-          ./bots.sh revisar | grep -E "FALTA|AVISO|ok" || true
-          ./bots.sh arrancar > /dev/null 2>&1 || { echo "no arranco: ./bots.sh revisar marco algo (mira arriba)"; exit 1; }
+          ./bots.sh revisar > /tmp/rev.txt 2>&1; echo "revisar: salio $?"; grep -av -i "server=" /tmp/rev.txt | tail -15
+          ./bots.sh arrancar > /tmp/arr.txt 2>&1 || { echo "no arranco:"; grep -av -i "server=" /tmp/arr.txt | tail -15; exit 1; }
           echo "bot prendido por $LIMITE s"
           t0=$(date +%s)
           if [ "$MODO_AFK" = prueba ]; then
