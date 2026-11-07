@@ -191,6 +191,8 @@ jobs:
             if [ "${{ inputs.set_nuevo }}" = true ]; then echo "set nuevo: no recupero el almacen (se carga AFK_OBJETIVO de cero)"
             elif [ -s estado/almacen.sql ]; then psql -q -v ON_ERROR_STOP=0 -f estado/almacen.sql > /dev/null 2>&1; fi
             for r in solo vigia; do [ -d estado/$r ] && { mkdir -p data/$r; cp -a estado/$r/. data/$r/; }; done
+            # el nombre de la cuenta sale del login (device-login no escribe "cuenta" y bots.sh lo pide)
+            for r in solo vigia; do [ -s data/$r/msa.json ] && [ ! -s data/$r/cuenta ] && python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['accounts'][0]['username'])" data/$r/msa.json > data/$r/cuenta 2>/dev/null; done; true
             [ -f estado/proxys/cache.tsv ] && { mkdir -p data/proxys; cp estado/proxys/cache.tsv data/proxys/; echo "cache de proxys: $(wc -l < data/proxys/cache.tsv) que ya entraron"; }
             cp estado/tanda ../../tanda-anterior 2>/dev/null || true
             echo "estado recuperado: tanda $(cat estado/tanda 2>/dev/null || echo ?), $(psql -At -c 'select count(*) from bom' 2>/dev/null || echo 0) lineas de set"
@@ -294,6 +296,7 @@ jobs:
             python3 ../../tools/login/device-login.py --out data/$ROL/msa.json --timeout 840
           fi
           test -s data/$ROL/msa.json && echo "login guardado para $ROL"
+          [ -s data/$ROL/msa.json ] && python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['accounts'][0]['username'])" data/$ROL/msa.json > data/$ROL/cuenta
           # guardar el login en el estado cifrado aunque esta sea solo la tanda de login
           . ../../.clave 2>/dev/null || true
           if [ -n "${AFK_CLAVE:-}" ]; then bash ../../afk-guardar.sh ../../estado.enc 2>&1 | grep -i login || true; fi
@@ -371,6 +374,11 @@ jobs:
             [ -n "$pr" ] && GH_TOKEN=$GHT gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" --body "AVISO $1: $2 (tanda $GITHUB_RUN_ID, minuto $((now / 60)))" > /dev/null 2>&1
           }
           revisar_avisos() {
+            if [ $now -ge 600 ] && [ -s data/proxys/estado.json ]; then
+              px=$(python3 -c "import json;e=json.load(open('data/proxys/estado.json'));print('%d candidatos, %d sanos, %d para usar, mediana %s ms' % (e['candidatos'], e['sanos'], e['comprador'], e['ms_mediana']))" 2>/dev/null)
+              ul=$(psql -At -c "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'" 2>/dev/null)
+              avisar ARRANCO "10 min andando; proxys: ${px:-sin datos}; ultimo latido hace ${ul:-?} s"
+            fi
             bot=$(psql -At -c "select coalesce(sum(split_part(l, E'\t', 2)::int), 0) from snapshot, regexp_split_to_table(contents, E'\n') l where l like 'BOTTLE|%'" 2>/dev/null)
             pend=$(psql -At -c "select coalesce(sum(qty - made), 0) from rune_order where state not in ('DONE', 'CANCELLED') and made < qty" 2>/dev/null)
             nro=$(psql -At -c "select count(*) from rune_order" 2>/dev/null)
@@ -485,7 +493,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ESTADO: ${{ job.status }}
-          SIGUE: ${{ (vars.AFK_ON == '1' || env.SEGUIR == '1') && hashFiles('set-completo') == '' }}
+          SIGUE: ${{ (vars.AFK_ON == '1' || env.SEGUIR == '1') && hashFiles('set-completo') == '' }}   # solo si sale bien
         run: |
           if [ "$ESTADO" != success ]; then m="FALLO: la tanda termino con estado $ESTADO (mirar los pasos en rojo)"
           elif [ "$SIGUE" != true ]; then m="FIN: la tanda termino y no hay siguiente (seguir apagado o set completo)"
@@ -495,7 +503,7 @@ jobs:
           echo "$m"
 
       - name: Lanzar la tanda siguiente
-        if: always() && env.MODO_AFK == 'correr' && (vars.AFK_ON == '1' || env.SEGUIR == '1') && hashFiles('set-completo') == ''
+        if: success() && env.MODO_AFK == 'correr' && (vars.AFK_ON == '1' || env.SEGUIR == '1') && hashFiles('set-completo') == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
