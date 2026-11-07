@@ -177,6 +177,7 @@ jobs:
             if [ "${{ inputs.set_nuevo }}" = true ]; then echo "set nuevo: no recupero el almacen (se carga AFK_OBJETIVO de cero)"
             elif [ -s estado/almacen.sql ]; then psql -q -v ON_ERROR_STOP=0 -f estado/almacen.sql > /dev/null 2>&1; fi
             for r in solo vigia; do [ -d estado/$r ] && { mkdir -p data/$r; cp -a estado/$r/. data/$r/; }; done
+            [ -f estado/proxys/cache.tsv ] && { mkdir -p data/proxys; cp estado/proxys/cache.tsv data/proxys/; echo "cache de proxys: $(wc -l < data/proxys/cache.tsv) que ya entraron"; }
             cp estado/tanda ../../tanda-anterior 2>/dev/null || true
             echo "estado recuperado: tanda $(cat estado/tanda 2>/dev/null || echo ?), $(psql -At -c 'select count(*) from bom' 2>/dev/null || echo 0) lineas de set"
             rm -rf estado

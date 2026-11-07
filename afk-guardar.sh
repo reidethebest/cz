@@ -10,6 +10,8 @@ for f in msa.json cuenta reinicios.log comandos.sha; do [ -f data/solo/$f ] && c
 # la cuenta vigia (prueba proxys): su login y sus reinicios; las marcas de los proxys para la tanda siguiente
 if [ -d data/vigia ]; then mkdir -p estado/vigia; for f in msa.json cuenta reinicios.log; do [ -f data/vigia/$f ] && cp data/vigia/$f estado/vigia/; done; fi
 [ -f ../../proxy-vigia.log ] && tail -n 200 ../../proxy-vigia.log > estado/solo/logs-anteriores/proxy-vigia.log
+# cache de proxys que entraron al server: se reusa la proxima tanda (lo que pidio REIDEN)
+[ -f data/proxys/cache.tsv ] && { mkdir -p estado/proxys; cp data/proxys/cache.tsv estado/proxys/; }
 [ -f data/solo/vigilante.log ] && tail -n 5000 data/solo/vigilante.log > estado/solo/vigilante.log
 c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1); [ -n "$c" ] && tail -n 4000 "$c" > estado/solo/logs-anteriores/ultimo-cliente.out
 echo $(( $(cat ../../tanda-anterior 2>/dev/null || echo 0) + 1 )) > estado/tanda
