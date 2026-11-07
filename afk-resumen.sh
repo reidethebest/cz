@@ -9,5 +9,15 @@ q "select '  falta ' || spec_key || ' ' || applied || '/' || required from bom w
 q "select '  compras ' || status || ': ' || count(*) || ' (' || coalesce(sum(qty*unit_price),0) || ' de plata)' from purchase group by status order by status"
 l=$(q "select extract(epoch from now() - max(at))::int from event where bot like '%solo%'")
 [ -n "$l" ] && echo "  ultimo latido del bot: hace ${l} s"
+if [ -s data/proxys/estado.json ]; then
+  python3 - <<'PY' 2>/dev/null
+import json, time
+e = json.load(open("data/proxys/estado.json"))
+print("  proxys: %d candidatos, %d sanos, %d para comprar, mediana %s ms; en 1 h %d entradas buenas y %d cortes (hace %d s)"
+      % (e["candidatos"], e["sanos"], e["comprador"], e["ms_mediana"], e["entradas_buenas_1h"], e["cortes_1h"], time.time() - e["at"]))
+PY
+  c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1)
+  [ -n "$c" ] && echo "  conexiones del comprador: $(grep -ac '\[PROXY\] uso' "$c") por proxy, $(grep -ac 'ningun proxy sano' "$c") esperando proxy, $(grep -ac '\[PROXY\] .* malo' "$c") proxys caidos"
+fi
 [ -s data/solo-cli.jar ] && java -jar data/solo-cli.jar --pg jdbc:postgresql://127.0.0.1:5432/pipeline --user pipeline --pass pipeline lista 2>/dev/null | head -40 | sed 's/^/  /'
 exit 0
