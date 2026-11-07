@@ -361,7 +361,11 @@ class Vigia:
             # el comprador se corto dos veces en la ultima hora: el ping anda pero no aguanta una sesion
             return sum(1 for t in malos_c.get(k, []) if t > now - 3600) >= 2
         comprador = [px for px in sanos if not castigado(px["id"])]
-        comprador.sort(key=lambda px: (-(ultima(buenos, px["id"]) > now - 3600), self.estado[px["id"]]["ms"]))
+        # orden: los que aguantaron una sesion hace poco, despues los mas estables (entradas buenas menos cortes en
+        # 24 h) y al final el ping
+        def estable(k):
+            return sum(1 for t in buenos.get(k, []) if t > now - 86400) - 2 * sum(1 for t in malos_c.get(k, []) if t > now - 86400)
+        comprador.sort(key=lambda px: (-(ultima(buenos, px["id"]) > now - 3600), -estable(px["id"]), self.estado[px["id"]]["ms"]))
         # vigia: el que hace mas que nadie entra de verdad por el, primero
         vigia = sorted(sanos, key=lambda px: (max(ultima(buenos, px["id"]), ultima(malos_v, px["id"])), self.estado[px["id"]]["ms"]))
         escribir(os.path.join(self.d, "comprador.tsv"), comprador[:200])
