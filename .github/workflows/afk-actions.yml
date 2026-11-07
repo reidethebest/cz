@@ -96,6 +96,7 @@ jobs:
           if [ "$MODO_AFK" != prueba ] && [ -n "$AFK_CONTROL" ]; then
             if git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL" 2>/dev/null; then
               mkdir -p /tmp/control; git -C /tmp/src archive FETCH_HEAD afk 2>/dev/null | tar x -C /tmp/control 2>/dev/null || true
+              k=$(head -1 /tmp/control/afk/estado-key.txt 2>/dev/null | tr -dc 'a-z0-9-'); [ -n "$k" ] && [ "$MODO_AFK" != prueba ] && echo "ESTADO_KEY=$k" >> "$GITHUB_ENV"
               [ "$(head -1 /tmp/control/afk/seguir.txt 2>/dev/null | tr -d '[:space:]')" = 1 ] && echo "SEGUIR=1" >> "$GITHUB_ENV"
               echo "control: $(git -C /tmp/src log -1 --format=%h FETCH_HEAD), objetivo $([ -s /tmp/control/afk/objetivo.set ] && echo si || echo no), comandos $([ -s /tmp/control/afk/comandos.txt ] && echo si || echo no)"
             else echo "control: sin rama de control, uso los secrets"; fi
@@ -161,7 +162,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: estado.enc
-          key: afk-estado-${{ env.MODO_AFK == 'prueba' && 'prueba' || 'real' }}-${{ github.run_id }}
+          # afk/estado-key.txt en la rama de control fuerza un estado guardado puntual (para volver a uno bueno)
+          key: ${{ env.ESTADO_KEY || format('afk-estado-{0}-{1}', env.MODO_AFK == 'prueba' && 'prueba' || 'real', github.run_id) }}
           restore-keys: afk-estado-${{ env.MODO_AFK == 'prueba' && 'prueba' || 'real' }}-
 
       - name: Instalar (Java, Postgres, jar, Minecraft)
