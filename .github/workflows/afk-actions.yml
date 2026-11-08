@@ -466,6 +466,12 @@ jobs:
               | sed -n 's/.*VISTO \([A-Za-z_ ]*[A-Za-z_]\) |.*| \$\([0-9,?]*\).*/\1|\2/p' | sort -u | while IFS='|' read -r r p; do
                 avisar "VISTO_$(echo "$r" | tr ' ' '_')_$(echo "$p" | tr -dc '0-9')" "el sniper vio algo de la lista a \$$p y NO lo compro: $r"
               done
+            # PRUEBA con /ah history: si no reconoce las ventas reales de una linea, aviso enseguida
+            [ -n "$c" ] && grep -a '\[Sniper\] PRUEBA' "$c" | grep -aE 'NO la compraria|sin ventas' | sed -n 's/.*PRUEBA \([^:]*\):.*/\1/p' | sort -u | while read -r k; do
+                avisar "PRUEBA_$(echo "$k" | tr -dc 'a-z0-9')" "la prueba con /ah history dice que el sniper NO reconoceria una linea de la lista (revisar el log)"
+              done
+              grep -a '\[Sniper\] PRUEBA' "$c" 2>/dev/null | grep -aq 'OK, la compraria' && avisar PRUEBA_OK "la prueba con /ah history reconoce las ventas reales: compraria el item cuando aparezca"
+            true
           }
           traer_ordenes
           HORAS='${{ inputs.horas || '5.5' }}'
