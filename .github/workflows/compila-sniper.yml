@@ -1,0 +1,57 @@
+# Compila y corre los tests del cliente con las mismas ramas que el bot en vivo (base + modulos), antes de cargarlo.
+# Las fuentes se bajan con MINECADIA_READ_TOKEN y nunca se suben aca; el log solo muestra si compila y que tests fallan.
+name: compila-sniper
+on:
+  push:
+    branches: [compila-sniper]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: compila-sniper
+  cancel-in-progress: true
+jobs:
+  compila:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch private sources
+        env:
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          read -r BASE M1 M2 M3 < ramas.txt
+          git init -q src && cd src
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
+            fetch -q --no-tags https://github.com/reidethebest/minecadia-client.git \
+            "+refs/heads/$BASE:refs/heads/base" "+refs/heads/$M1:refs/heads/m1" "+refs/heads/$M2:refs/heads/m2" "+refs/heads/$M3:refs/heads/m3"
+          git -c advice.detachedHead=false checkout -q base
+          git config user.email e2e@local; git config user.name e2e
+          for m in m1 m2 m3; do
+            if ! git merge -q --no-edit "$m" >/dev/null 2>&1; then
+              bad=$(git diff --name-only --diff-filter=U | grep -E '^(minecadia|pipeline)/' || true)
+              if [ -n "$bad" ]; then echo "conflicto en codigo al mezclar $m"; exit 1; fi
+              git checkout -q --theirs -- $(git diff --name-only --diff-filter=U); git add -A; git commit -q --no-edit
+            fi
+          done
+          for r in base m1 m2 m3; do git log --format=%h -1 "$r"; done
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+      - name: Build client jar
+        working-directory: src/minecadia
+        run: chmod +x gradlew && ./gradlew --no-daemon -q reobfShadowJar && echo COMPILA_OK
+      - name: Tests
+        working-directory: src/minecadia
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --continue test --tests '*itemsniper*' --tests '*ItemSniper*' --tests '*pipeline*' > tests.log 2>&1 && echo TESTS_OK || {
+            python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for f in glob.glob("build/test-results/test/*.xml"):
+              for tc in ET.parse(f).getroot().iter("testcase"):
+                  for bad in list(tc.findall("failure")) + list(tc.findall("error")):
+                      print("FAIL", tc.get("classname").split(".")[-1], tc.get("name"))
+          PY
+            grep -c "^e: " tests.log || true; exit 1; }
