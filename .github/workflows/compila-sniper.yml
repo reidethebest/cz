@@ -5,10 +5,14 @@ on:
   push:
     branches: [compila-sniper]
   workflow_dispatch:
+    inputs:
+      ramas:
+        description: 'base m1 m2 m3 (vacio = ramas.txt)'
+        required: false
 permissions:
   contents: read
 concurrency:
-  group: compila-sniper
+  group: compila-sniper-${{ github.event.inputs.ramas }}
   cancel-in-progress: true
 jobs:
   compila:
@@ -20,7 +24,8 @@ jobs:
         env:
           TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
         run: |
-          read -r BASE M1 M2 M3 < ramas.txt
+          R="${{ github.event.inputs.ramas }}"; [ -n "$R" ] || R=$(cat ramas.txt)
+          read -r BASE M1 M2 M3 <<< "$R"
           git init -q src && cd src
           git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
             fetch -q --no-tags https://github.com/reidethebest/minecadia-client.git \
@@ -53,5 +58,6 @@ jobs:
               for tc in ET.parse(f).getroot().iter("testcase"):
                   for bad in list(tc.findall("failure")) + list(tc.findall("error")):
                       print("FAIL", tc.get("classname").split(".")[-1], tc.get("name"))
+                      print("   ", " ".join(((bad.get("message") or "") + " " + (bad.text or "")).split())[:700])
           PY
             grep -c "^e: " tests.log || true; exit 1; }
