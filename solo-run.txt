@@ -1,7 +1,6 @@
-d952a69ceda690e34ec6208488130b1e926f9677
-chestzones-module,1491b1318593388eb251056c6c1481add5c15b85,claude/autoenchant-sim
-PRIORITY
+829db9bfd92e372816f742b30b0d58757ee89aff
+b395cc6a07eb8107b646fe58a0292dff6c49e681,cb23fee7769bedd3db4136e965a5e0d7f469500e,e70de86f06ec66ced16d508ba894736a5a97bcbf
+PHASED
 
-solo.order=COMPRAR cap.RUNE|chef|4|100|=1000 cap.RUNE|vanquish|3|100|=200000
-15
-# solo-e2e run 9: solo comprar, d952a69 + ItemSniper 1491b13, con precio maximo (chef nunca, vanquish holgado)
+solo.order=COMPRAR,BOTELLAS
+# solo-e2e: trabas-sim (fixes de la granja) sobre los modulos de la tanda en vivo
