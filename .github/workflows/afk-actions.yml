@@ -444,6 +444,11 @@ jobs:
             [ $now -ge 1200 ] && [ $(( now % 1800 )) -lt 60 ] && avisar ESTADO_$((now / 1800)) "botellas ${bot:-?}, runas que faltan ${pend:-?} de ${nro:-?} pedidas, ${nsn:-0} cofres/pv mirados"
             # sin botellas solo despues de mirar los /pv (al principio el indice esta vacio y daria 0)
             [ "${nsn:-0}" -gt 0 ] && [ $now -ge 600 ] && [ "$bot" = 0 ] && [ -n "$pend" ] && [ "$pend" != 0 ] && avisar SIN_BOTELLAS "no quedan botellas y faltan $pend runas (cargar mas en /pv 1)"
+            # compra en el AH: aviso apenas el Sniper la anota (una vez por compra)
+            for fila in $(psql -At -F ';' -c "select id, replace(split_part(item_key, '|', 2), ' ', '_'), split_part(item_key, '|', 3), split_part(item_key, '|', 4), unit_price * qty, status from purchase where status in ('CONFIRMED', 'UNCERTAIN') order by id" 2>/dev/null); do
+              IFS=';' read -r pid pfam plvl psuc ptot pst <<< "$fila"
+              avisar "COMPRA_$pid" "compro ${pfam//_/ } nivel $plvl (${psuc}%) por $ptot ($pst)"
+            done
             [ "${nro:-0}" != 0 ] && [ "$pend" = 0 ] && avisar RUNAS_LISTAS "todas las runas pedidas estan al 100% y guardadas"
             # quieto: ni botellas ni runas cambiaron en 15 min y todavia hay de las dos
             mk=$(psql -At -c "select coalesce(sum(made), 0) from rune_order" 2>/dev/null); firma="${bot:-}-${mk:-}"
