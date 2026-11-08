@@ -1,4 +1,4 @@
 claude/project-thread-zpir1p
 829db9bfd92e372816f742b30b0d58757ee89aff
-b395cc6a07eb8107b646fe58a0292dff6c49e681,5042f7b8b540ad81464a5ea8ab2511c1bbf8ca3e,e70de86f06ec66ced16d508ba894736a5a97bcbf
+b395cc6a07eb8107b646fe58a0292dff6c49e681,4f9879b2c7ced2c29ae725398ccd119b457a1748,e70de86f06ec66ced16d508ba894736a5a97bcbf
 # 1: rama del kit  2: pipeline + Solo  3: ChestZones,ItemSniper,AutoEnchant
