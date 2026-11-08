@@ -1,0 +1,4 @@
+be096f4da03ff8c5a9608c1e95d23272b9bde9ff
+5316b2d12cc72a7e663fce7de8e931ae5972baf5
+b395cc6a07eb8107b646fe58a0292dff6c49e681,cb23fee7769bedd3db4136e965a5e0d7f469500e,e70de86f06ec66ced16d508ba894736a5a97bcbf
+# 1: kit (deploy/vps con la cuenta ah)  2: codigo (fixes de la granja + DuoSync)  3: modulos de la tanda en vivo

@@ -26,4 +26,11 @@ PY
   [ -n "$c" ] && echo "  conexiones del comprador: $(grep -ac '\[PROXY\] uso' "$c") por proxy, $(grep -ac 'ningun proxy sano' "$c") esperando proxy, $(grep -ac '\[PROXY\] .* malo' "$c") proxys caidos"
 fi
 [ -s data/solo-cli.jar ] && java -jar data/solo-cli.jar --pg jdbc:postgresql://127.0.0.1:5432/pipeline --user pipeline --pass pipeline lista 2>/dev/null | head -40 | sed 's/^/  /'
+# la segunda cuenta (solo AH), si esta: sus compras y el estado que dejaron las dos por DuoSync
+if psql -d pipeline_ah -At -c "select 1 from bom limit 1" 2>/dev/null | grep -q 1; then
+  echo "  cuenta del AH:"
+  psql -d pipeline_ah -At -c "select '    falta ' || spec_key || ' ' || applied || '/' || required from bom where applied < required order by spec_key limit 10" 2>/dev/null
+  psql -d pipeline_ah -At -c "select '    compras ' || status || ': ' || count(*) || ' (' || coalesce(sum(qty*unit_price),0) || ' de plata)' from purchase group by status order by status" 2>/dev/null
+  e=$(q "select value from config where key = 'duo.ah.estado'"); [ -n "$e" ] && echo "    estado del AH visto por la granja: $e"
+fi
 exit 0

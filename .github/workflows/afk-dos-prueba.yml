@@ -1,0 +1,193 @@
+name: afk-dos-prueba
+
+# Prueba del modo DOS CUENTAS contra el emulador (nada real, sin secrets del server): la cuenta "Solo" abre botellas
+# (solo.order=BOTELLAS) y la cuenta "Ah" solo compra en el AH (solo.order=COMPRAR), cada una con su almacen
+# (pipeline y pipeline_ah) y unidas por DuoSync: la del AH compra la runa que a la granja le falta y la granja deja de
+# pedirla. Usa el kit de deploy/vps igual que afk-actions. Se lanza con un push a dos-run.txt:
+#   1ra linea = kit (deploy/vps)  2da = base del codigo  3ra = modulos separados por comas
+# Codigo privado: se baja con MINECADIA_READ_TOKEN en el runner y no se sube nada; en el log solo numeros.
+
+on:
+  push:
+    paths: ["dos-run.txt", ".github/workflows/afk-dos-prueba.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: afk-dos-prueba-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prueba:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: pipeline
+      PGPASSWORD: pipeline
+      PGDATABASE: pipeline
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kit (privado, no se guarda)
+        env:
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          test -n "$TOKEN" || { echo "falta el secret MINECADIA_READ_TOKEN"; exit 1; }
+          KIT=$(sed -n 1p dos-run.txt | tr -d '[:space:]'); BASE=$(sed -n 2p dos-run.txt | tr -d '[:space:]')
+          H="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git init -q /tmp/src
+          git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$KIT"
+          git -C /tmp/src log -1 --format='kit %h' FETCH_HEAD
+          git -C /tmp/src archive FETCH_HEAD deploy/vps | tar x
+          grep -q 'ROLES="$ROLES ah"' deploy/vps/bots.sh || { echo "el kit no tiene la cuenta ah"; exit 1; }
+          git -C /tmp/src -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$BASE"
+          git -C /tmp/src log -1 --format='base %h' FETCH_HEAD
+          git -C /tmp/src archive FETCH_HEAD tools/MinecadiaEmu | tar x
+          rm -rf /tmp/src
+
+      - name: Config de las dos cuentas
+        working-directory: deploy/vps
+        run: |
+          cp config/bots.env.example config/bots.env
+          BASE=$(sed -n 2p ../../dos-run.txt | tr -d '[:space:]'); MOD=$(sed -n 3p ../../dos-run.txt | tr -d '[:space:]')
+          sed -i -e 's/^MODO=.*/MODO=nativo/' -e 's/^UNA_CUENTA=.*/UNA_CUENTA=1/' -e 's/^PG_PASS=.*/PG_PASS=pipeline/' \
+            -e 's/^RAM=.*/RAM=1280m/' -e "s#^RAMA_BASE=.*#RAMA_BASE=$BASE#" -e 's/^SERVER=.*/SERVER=127.0.0.1/' \
+            -e 's/^AUTH=.*/AUTH=offline/' -e 's/^CUENTA_SOLO=.*/CUENTA_SOLO=Solo/' -e 's/^SIN_MUNDO_MIN=.*/SIN_MUNDO_MIN=6/' config/bots.env
+          [ -n "$MOD" ] && sed -i "s#^RAMAS_MODULOS=.*#RAMAS_MODULOS=$MOD#" config/bots.env
+          printf 'SIN_SYSTEMD=1\nAH=1\nCUENTA_AH=AhBot\n' >> config/bots.env
+          printf 'wait 200\ncmd ;toggle PipelineBot on\n' > config/inicio.txt
+          cp config/inicio.txt config/inicio-ah.txt
+          # granja: solo botellas (como el objetivo real de REIDEN), mas equalizer IV que las botellas no dan
+          cat > config/objetivo.set <<'SET'
+          #!config solo.policy=fases
+          #!config solo.order=BOTELLAS
+          #!config buymax.BOTTLE|bottle|0|0|=0
+          #!config pv=1:BOTTLES,2-12:RUNES_OUT,13:BOTTLES,14-15:STORAGE
+          #!config duo.peer=jdbc:postgresql://127.0.0.1:5432/pipeline_ah
+          #!config duo.rol=botellas
+          RUNE|armored|4|100|	2	RUNERO
+          RUNE|enlighted|3|100|	2	RUNERO
+          RUNE|life essence|3|100|	2	RUNERO
+          RUNE|dodge|5|100|	2	RUNERO
+          RUNE|tank|4|100|	2	RUNERO
+          RUNE|equalizer|4|100|	1	RUNERO
+          SET
+          # cuenta del AH: la rosa al 25% (como la Omni) a /pv 1, y equalizer IV para la granja por DuoSync
+          cat > config/objetivo-ah.set <<'SET'
+          #!config solo.policy=fases
+          #!config solo.order=COMPRAR
+          #!config pv=1-15:STORAGE
+          #!config buy.storeTo=-77:1:0:0
+          #!config buy.maxShare=1.0
+          #!config cap.RUNE|planetary deathbringer|3|25|=25000
+          #!config price.RUNE|planetary deathbringer|3|25|=20000
+          #!config duo.comprar.RUNE|equalizer|4|100|=50000
+          #!config duo.peer=jdbc:postgresql://127.0.0.1:5432/pipeline
+          #!config duo.rol=ah
+          RUNE|planetary deathbringer|3|25|	1	SNIPER
+          SET
+          sed -i 's/^          //' config/objetivo.set config/objetivo-ah.set
+          echo "objetivos: granja $(grep -cvE '^\s*(#|$)' config/objetivo.set) lineas, AH $(grep -cvE '^\s*(#|$)' config/objetivo-ah.set)"
+
+      - name: Restaurar Minecraft (vanilla, sin nada privado)
+        uses: actions/cache/restore@v4
+        with:
+          path: deploy/vps/data/shared
+          key: afk-mc-forge-1.8.9-v1
+
+      - name: Instalar (Java, Postgres, jar, Minecraft) y la base del AH
+        working-directory: deploy/vps
+        env:
+          GITHUB_TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+        run: |
+          ./instalar-nativo.sh > ../../instalar.log 2>&1 || { tail -30 ../../instalar.log; exit 1; }
+          ./bots.sh instalar > ../../instalar2.log 2>&1 || { tail -30 ../../instalar2.log | grep -v -i token; exit 1; }
+          test -s data/mod/minecadia.jar
+          sudo -u postgres psql -Atc "select 1 from pg_database where datname = 'pipeline_ah'" | grep -q 1 || sudo -u postgres createdb -O pipeline pipeline_ah
+          echo "jar listo, bases: $(sudo -u postgres psql -Atc "select string_agg(datname, ',') from pg_database where datname like 'pipeline%'")"
+
+      - name: JDK 8 para el emulador
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Restaurar Spigot 1.8.8
+        uses: actions/cache/restore@v4
+        with:
+          path: spigot
+          key: spigot-1.8.8-v1
+
+      - name: Server de prueba (emulador)
+        run: |
+          J8=$JAVA_HOME/bin
+          mkdir -p spigot bt
+          if [ ! -f spigot/spigot-1.8.8.jar ]; then (cd bt && curl -fsSL -o BuildTools.jar https://hub.spigotmc.org/jenkins/job/BuildTools/lastSuccessfulBuild/artifact/target/BuildTools.jar && $J8/java -jar BuildTools.jar --rev 1.8.8 > bt.log 2>&1 && cp spigot-1.8.8*.jar ../spigot/spigot-1.8.8.jar) || { echo "no se pudo armar Spigot"; exit 1; }; fi
+          (cd tools/MinecadiaEmu && mkdir -p out && $J8/javac -encoding UTF-8 -cp ../../spigot/spigot-1.8.8.jar -d out src/main/java/net/minecadia/emu/*.java && $J8/jar cf MinecadiaEmu.jar -C out . -C src/main/resources .)
+          mkdir -p server/plugins/MinecadiaEmu; cp spigot/spigot-1.8.8.jar server/; cp tools/MinecadiaEmu/MinecadiaEmu.jar server/plugins/
+          E2E=tools/MinecadiaEmu/e2e
+          # plata para las dos cuentas; /pv en vez de cofres, con 40 botellas en /pv 1
+          sed -E 's/^(\s+)Sniper:.*/\1Solo: 200000\n\1AhBot: 1500000/; s/players: \[Sniper\]/players: [AhBot]/' $E2E/config-clon-leggings.yml > server/plugins/MinecadiaEmu/config.yml
+          python3 - server/plugins/MinecadiaEmu/config.yml <<'PY'
+          import re, sys
+          p = sys.argv[1]; s = open(p).read()
+          s = re.sub(r"(\n  chests: )\[[^\]]*\]", r"\1[]", s, count=1) + '\npv:\n  count: 15\n  size: 54\n  fill:\n    "1": ["bottle:1 * 40"]\n'
+          open(p, "w").write(s)
+          PY
+          grep -A3 -E '^  start:|^pv:' server/plugins/MinecadiaEmu/config.yml
+          cd server; echo "eula=true" > eula.txt
+          printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\nmax-players=10\n' > server.properties
+          mkfifo console; nohup sleep infinity > console 2>/dev/null &
+          nohup $J8/java -Xmx1G -jar spigot-1.8.8.jar nogui < console > server.log 2>&1 &
+          for i in $(seq 1 120); do grep -q "Done (" server.log && break; sleep 5; done; grep -q "Done (" server.log && echo "emulador listo"
+
+      - name: Correr las dos cuentas
+        working-directory: deploy/vps
+        run: |
+          set +e
+          ./bots.sh arrancar > /tmp/arr.txt 2>&1 || { echo "no arranco:"; tail -15 /tmp/arr.txt; exit 1; }
+          ./bots.sh estado 2>&1 | head -5
+          t0=$(date +%s)
+          a() { psql -d pipeline_ah -At -c "$1" 2>/dev/null; }
+          g() { psql -d pipeline -At -c "$1" 2>/dev/null; }
+          while true; do
+            sleep 60; now=$(( $(date +%s) - t0 ))
+            made=$(g "select coalesce(sum(least(made, qty)), 0) from rune_order")
+            bot=$(g "select coalesce(sum(split_part(l, E'\t', 2)::int), 0) from snapshot, regexp_split_to_table(contents, E'\n') l where l like 'BOTTLE|%'")
+            comp=$(a "select count(*) from purchase where status = 'CONFIRMED'")
+            eq=$(g "select value from config where key = 'buymax.RUNE|equalizer|4|100|'")
+            echo "[$((now / 60)) min] granja: botellas ${bot:-?}, runas hechas ${made:-?}; AH: compras ${comp:-?}; granja equalizer hasta ${eq:-sin tope}"
+            pd=$(a "select count(*) from purchase where status = 'CONFIRMED' and item_key like 'RUNE|planetary deathbringer|3|%'")
+            pe=$(a "select count(*) from purchase where status = 'CONFIRMED' and item_key like 'RUNE|equalizer|4|100|%'")
+            [ "${pd:-0}" -ge 1 ] && [ "${pe:-0}" -ge 1 ] && [ "${made:-0}" -ge 3 ] && [ "$eq" = 0 ] && { echo "listo a los $now s"; sleep 90; break; }
+            [ $now -ge 2400 ] && { echo "tiempo de prueba agotado ($now s)"; break; }
+          done
+          ./bots.sh parar > /dev/null 2>&1
+
+      - name: Chequeo
+        working-directory: deploy/vps
+        run: |
+          a() { psql -d pipeline_ah -At -c "$1" 2>/dev/null; }
+          g() { psql -d pipeline -At -c "$1" 2>/dev/null; }
+          bad=0; ok() { echo "ok: $1"; }; mal() { echo "FALLA: $1"; bad=1; }
+          made=$(g "select coalesce(sum(least(made, qty)), 0) from rune_order")
+          [ "${made:-0}" -ge 3 ] && ok "la granja hizo $made runas al 100%" || mal "la granja hizo ${made:-0} runas"
+          [ "$(g "select count(*) from purchase")" = 0 ] && ok "la granja no compro nada" || mal "la granja compro: $(g "select string_agg(item_key, ',') from purchase")"
+          pd=$(a "select count(*) from purchase where status = 'CONFIRMED' and item_key like 'RUNE|planetary deathbringer|3|%'")
+          [ "${pd:-0}" -ge 1 ] && ok "el AH compro la rosa" || mal "el AH no compro la rosa"
+          pe=$(a "select count(*) from purchase where status = 'CONFIRMED' and item_key like 'RUNE|equalizer|4|100|%'")
+          [ "${pe:-0}" = 1 ] && ok "el AH compro 1 equalizer para la granja (DuoSync)" || mal "el AH compro ${pe:-0} equalizer"
+          eq=$(g "select value from config where key = 'buymax.RUNE|equalizer|4|100|'")
+          [ "$eq" = 0 ] && ok "la granja ya no pide equalizer" || mal "la granja equalizer hasta '${eq}'"
+          [ -n "$(g "select value from config where key = 'duo.ah.estado'")" ] && ok "estado del AH en la granja: $(g "select value from config where key = 'duo.ah.estado'")" || mal "sin estado del AH en la granja"
+          [ -n "$(a "select value from config where key = 'duo.botellas.estado'")" ] && ok "estado de la granja en el AH: $(a "select value from config where key = 'duo.botellas.estado'")" || mal "sin estado de la granja en el AH"
+          over=$(a "select count(*) from purchase where status <> 'CANCELLED' and unit_price > 50000")
+          [ "${over:-0}" = 0 ] && ok "el AH nunca paso los topes" || mal "$over compras sobre el tope"
+          # la rosa comprada quedo guardada en /pv 1 de la cuenta del AH (buy.storeTo)
+          a "select type || ' ' || detail from event where type in ('BOUGHT_STORED', 'BOUGHT_NOT_STORED', 'CHEST_DEAD', 'MAXX_WAIT_AH_RUNE') order by at limit 10"
+          for r in solo ah; do c=$(cat data/$r/logs/cliente-*.out 2>/dev/null | grep -ac 'Exception'); echo "$r: $c lineas con Exception, $(cat data/$r/logs/cliente-*.out 2>/dev/null | grep -ac 'reinicio del cerebro') reinicios del cerebro"; done
+          cat data/ah/logs/cliente-*.out 2>/dev/null | grep -a 'dos cuentas' | sed 's/.*\[PIPELINE\]/[PIPELINE]/' | head -10
+          exit $bad

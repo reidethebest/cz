@@ -41,10 +41,10 @@ on:
         description: horas de juego en esta tanda (maximo 5.5)
         default: '5.5'
       cuenta:
-        description: 'solo para login: solo (la que compra) o vigia (la que prueba proxys)'
+        description: 'solo para login: solo (la de botellas), ah (la segunda cuenta, solo AH) o vigia (la que prueba proxys)'
         type: choice
         default: solo
-        options: [solo, vigia]
+        options: [solo, vigia, ah]
       set_nuevo:
         description: empezar un set nuevo (borra el progreso guardado del set; el login queda)
         type: boolean
@@ -147,6 +147,17 @@ jobs:
             if [ -s /tmp/control/afk/objetivo.set ]; then cp /tmp/control/afk/objetivo.set config/objetivo.set; echo "objetivo: de la rama de control"; fi
             echo "export AFK_CLAVE=$S_CLAVE" > ../../.clave
           fi
+          # dos cuentas (REIDEN 08-11): con afk/ah/objetivo.set en la rama de control, una segunda cuenta "ah" solo compra en
+          # el AH con su propio almacen (pipeline_ah); la de siempre ("solo") abre botellas. Se hablan por DuoSync.
+          if [ "$MODO_AFK" != prueba ] && [ -s /tmp/control/afk/ah/objetivo.set ]; then
+            cp /tmp/control/afk/ah/objetivo.set config/objetivo-ah.set
+            if [ -s /tmp/control/afk/ah/inicio.txt ]; then cp /tmp/control/afk/ah/inicio.txt config/inicio-ah.txt; else cp config/inicio.txt config/inicio-ah.txt; fi
+            grep -q '^#!config duo.peer=' config/objetivo.set || printf '#!config duo.peer=jdbc:postgresql://127.0.0.1:5432/pipeline_ah\n#!config duo.rol=botellas\n' >> config/objetivo.set
+            grep -q '^#!config duo.peer=' config/objetivo-ah.set || printf '#!config duo.peer=jdbc:postgresql://127.0.0.1:5432/pipeline\n#!config duo.rol=ah\n' >> config/objetivo-ah.set
+            echo AH=1 >> config/bots.env; echo "AH_ON=1" >> "$GITHUB_ENV"
+            echo "dos cuentas: si ($(grep -cvE '^\s*(#|$)' config/objetivo-ah.set) lineas en el objetivo del AH)"
+          fi
+          [ "$MODO_AFK" = login ] && [ "${{ inputs.cuenta }}" = ah ] && echo "AH_ON=1" >> "$GITHUB_ENV"
           # la cuenta vigia solo entra, se queda 2 minutos y sale (el vigilante la vuelve a lanzar con el proximo proxy)
           printf 'wait 2400\nquit\n' > config/inicio-vigia.txt
           [ "$MODO_AFK" = login ] && [ "${{ inputs.cuenta }}" = vigia ] && echo VIGIA=1 >> config/bots.env
@@ -173,6 +184,10 @@ jobs:
         run: |
           start=$(date +%s)
           ./instalar-nativo.sh > ../../instalar.log 2>&1 || { tail -30 ../../instalar.log; exit 1; }
+          if [ "${AH_ON:-0}" = 1 ]; then
+            sudo -u postgres psql -Atc "select 1 from pg_database where datname = 'pipeline_ah'" | grep -q 1 || sudo -u postgres createdb -O pipeline pipeline_ah
+            echo "almacen de la cuenta del AH: pipeline_ah"
+          fi
           ./bots.sh instalar > ../../instalar2.log 2>&1 || { tail -30 ../../instalar2.log | grep -v -i token; exit 1; }
           test -s data/mod/minecadia.jar
           echo "instalado en $(( $(date +%s) - start )) s"
@@ -192,9 +207,10 @@ jobs:
             openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AFK_CLAVE -in ../../estado.enc | tar xz
             if [ "${{ inputs.set_nuevo }}" = true ]; then echo "set nuevo: no recupero el almacen (se carga AFK_OBJETIVO de cero)"
             elif [ -s estado/almacen.sql ]; then psql -q -v ON_ERROR_STOP=0 -f estado/almacen.sql > /dev/null 2>&1; fi
-            for r in solo vigia; do [ -d estado/$r ] && { mkdir -p data/$r; cp -a estado/$r/. data/$r/; }; done
+            if [ "${AH_ON:-0}" = 1 ] && [ -s estado/almacen-ah.sql ] && [ "${{ inputs.set_nuevo }}" != true ]; then PGDATABASE=pipeline_ah psql -q -v ON_ERROR_STOP=0 -f estado/almacen-ah.sql > /dev/null 2>&1; echo "almacen del AH recuperado"; fi
+            for r in solo vigia ah; do [ -d estado/$r ] && { mkdir -p data/$r; cp -a estado/$r/. data/$r/; }; done
             # el nombre de la cuenta sale del login (device-login no escribe "cuenta" y bots.sh lo pide)
-            for r in solo vigia; do [ -s data/$r/msa.json ] && [ ! -s data/$r/cuenta ] && python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['accounts'][0]['username'])" data/$r/msa.json > data/$r/cuenta 2>/dev/null; done; true
+            for r in solo vigia ah; do [ -s data/$r/msa.json ] && [ ! -s data/$r/cuenta ] && python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['accounts'][0]['username'])" data/$r/msa.json > data/$r/cuenta 2>/dev/null; done; true
             [ -f estado/proxys/cache.tsv ] && { mkdir -p data/proxys; cp estado/proxys/cache.tsv data/proxys/; echo "cache de proxys: $(wc -l < data/proxys/cache.tsv) que ya entraron"; }
             cp estado/tanda ../../tanda-anterior 2>/dev/null || true
             echo "estado recuperado: tanda $(cat estado/tanda 2>/dev/null || echo ?), $(psql -At -c 'select count(*) from bom' 2>/dev/null || echo 0) lineas de set"
@@ -377,7 +393,13 @@ jobs:
                   fi
                   [ -s /tmp/recarga/afk/inicio.txt ] && cp /tmp/recarga/afk/inicio.txt config/inicio.txt
                   [ -s /tmp/recarga/afk/objetivo.set ] && cp /tmp/recarga/afk/objetivo.set config/objetivo.set
+                  if [ "${AH_ON:-0}" = 1 ] && [ -s /tmp/recarga/afk/ah/objetivo.set ]; then
+                    cp /tmp/recarga/afk/ah/objetivo.set config/objetivo-ah.set
+                    grep -q '^#!config duo.peer=' config/objetivo-ah.set || printf '#!config duo.peer=jdbc:postgresql://127.0.0.1:5432/pipeline\n#!config duo.rol=ah\n' >> config/objetivo-ah.set
+                  fi
+                  if [ "${AH_ON:-0}" = 1 ]; then grep -q '^#!config duo.peer=' config/objetivo.set || printf '#!config duo.peer=jdbc:postgresql://127.0.0.1:5432/pipeline_ah\n#!config duo.rol=botellas\n' >> config/objetivo.set; fi
                   ./bots.sh reiniciar solo > /tmp/recarga/reinicio.log 2>&1 && echo OK > /tmp/recarga/fin || echo FALLO_REINICIO > /tmp/recarga/fin
+                  [ "${AH_ON:-0}" = 1 ] && ./bots.sh reiniciar ah >> /tmp/recarga/reinicio.log 2>&1
                 ) &
                 recarga_pid=$!
               fi
