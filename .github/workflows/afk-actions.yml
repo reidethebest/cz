@@ -461,6 +461,11 @@ jobs:
             fi
             c=$(ls -t data/solo/logs/cliente-*.out 2>/dev/null | head -1)
             [ -n "$c" ] && ne=$(grep -ac 'Exception' "$c") && [ "$ne" -gt 200 ] && avisar ERRORES "el cliente lleva $ne errores (Exception) en el log"
+            # el sniper vio algo de la lista y no lo compro (salvo por pasar el tope): aviso con el motivo y el precio
+            [ -n "$c" ] && grep -a '\[Sniper\] VISTO' "$c" | grep -v 'VISTO OVER_CAP' \
+              | sed -n 's/.*VISTO \([A-Za-z_ ]*[A-Za-z_]\) |.*| \$\([0-9,?]*\).*/\1|\2/p' | sort -u | while IFS='|' read -r r p; do
+                avisar "VISTO_$(echo "$r" | tr ' ' '_')_$(echo "$p" | tr -dc '0-9')" "el sniper vio algo de la lista a \$$p y NO lo compro: $r"
+              done
           }
           traer_ordenes
           HORAS='${{ inputs.horas || '5.5' }}'
