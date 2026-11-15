@@ -1,26 +1,34 @@
 name: proxys-ranking
-# Prueba los proxys de la lista (rama de control) contra el server y deja el ranking cifrado con la clave publica
-# tools/proxy/ranking-cert.pem: en el log publico solo sale el bloque cifrado, Claude lo descifra con la privada.
+# Prueba TODOS los proxys de las listas publicas (tools/proxy/fuentes-ranking.txt + afk/proxy-fuentes.txt de la rama
+# de control) contra el server, repartidos en 20 jobs, 4 vueltas cada uno. Cada job deja en su log solo cantidades y
+# un bloque cifrado con tools/proxy/ranking-cert.pem (los mejores 80 de su parte); Claude los descifra con la privada.
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  ranking:
+  parte:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        parte: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@v4
       - name: Ranking
         env:
           TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
-          AFK_CONTROL: claude/project-thread-9ah29y
+          AFK_CONTROL: ${{ vars.AFK_CONTROL || 'claude/project-thread-9ah29y' }}
         run: |
           H="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           d=$(mktemp -d); git -C $d init -q
           git -C $d -c http.extraheader="$H" fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$AFK_CONTROL"
           S=$(git -C $d show FETCH_HEAD:afk/server.txt | head -1 | tr -d '[:space:]')
-          export AFK_PROXY_FUENTES=$(git -C $d show FETCH_HEAD:afk/proxy-fuentes.txt | grep -E '^https?://')
-          rm -rf $d; D=$(mktemp -d)
-          AFK_PROXY_LOTE=5000 python3 tools/proxy/proxy-vigia.py --dir $D --server "$S" --una-vez 2>&1 | grep -o "[0-9]* candidatos.*"
-          { echo "# ranking $(date -u +%F' '%H:%M) UTC, desde un runner de GitHub"; head -40 $D/ranking.tsv; } | openssl cms -encrypt -aes256 -outform PEM tools/proxy/ranking-cert.pem
+          F=$(git -C $d show FETCH_HEAD:afk/proxy-fuentes.txt 2>/dev/null | grep -E '^https?://' || true)
+          rm -rf $d
+          export AFK_PROXY_FUENTES="$(grep -E '^https?://' tools/proxy/fuentes-ranking.txt) $F"
+          ulimit -n 8192 || true
+          python3 tools/proxy/ranking-lote.py --server "$S" --parte ${{ matrix.parte }} --partes 20 --hilos 300 --vueltas 3 --salida /tmp/r.tsv
+          { echo "# parte ${{ matrix.parte }}, $(date -u +%F' '%H:%M) UTC, desde un runner de GitHub"; head -80 /tmp/r.tsv; } \
+            | openssl cms -encrypt -aes256 -outform PEM tools/proxy/ranking-cert.pem

@@ -329,6 +329,9 @@ jobs:
           else
             # listas publicas de la rama de control privada si no hay secret/variable; se releen cada 40 min
             [ -n "$AFK_PROXY_FUENTES" ] || AFK_PROXY_FUENTES=$(grep -E '^https?://' /tmp/control/afk/proxy-fuentes.txt 2>/dev/null || true)
+            # proxys ya probados (los mejores del ranking, afk/proxies.txt de la rama de control): se prueban siempre primero
+            [ -n "$AFK_PROXIES" ] || AFK_PROXIES=$(grep -vE '^\s*(#|$)' /tmp/control/afk/proxies.txt 2>/dev/null | cut -f1 || true)
+            echo "proxys fijos: $(printf '%s' "$AFK_PROXIES" | grep -c . || true), listas: $(printf '%s\n' $AFK_PROXY_FUENTES | grep -c . || true)"
             export AFK_PROXY_RELEER=${AFK_PROXY_RELEER:-2400}
             if [ -z "$AFK_PROXIES" ] && [ -z "$AFK_PROXY_FUENTES" ]; then echo "sin proxys: la cuenta entra con la IP de GitHub"; exit 0; fi
             SERVER=$(grep '^SERVER=' config/bots.env | cut -d= -f2-)
