@@ -4,8 +4,8 @@
 set -u
 out=$1
 : "${AFK_CLAVE:?falta AFK_CLAVE}"
-# sin login (tanda cortada antes de recuperar el estado): no pisar el estado bueno; se vuelve a guardar el anterior
-if [ ! -s data/solo/msa.json ]; then echo "estado no guardado: esta tanda no tiene login (queda el anterior)"; exit 0; fi
+# sin login (tanda cortada antes de recuperar el estado): no pisar el estado bueno; se vuelve a guardar el anterior (en prueba la cuenta es offline y no tiene login)
+if [ "${MODO_AFK:-}" != prueba ] && [ ! -s data/solo/msa.json ]; then echo "estado no guardado: esta tanda no tiene login (queda el anterior)"; exit 0; fi
 rm -rf estado; mkdir -p estado/solo/logs-anteriores
 pg_dump --clean --if-exists --no-owner --no-privileges > estado/almacen.sql 2>/dev/null || echo "aviso: no se pudo volcar el almacen"
 for f in msa.json cuenta reinicios.log comandos.sha ordenes.txt.hecho; do [ -f data/solo/$f ] && cp data/solo/$f estado/solo/; done
