@@ -1,7 +1,7 @@
 name: proxys-ranking
 # Prueba TODOS los proxys de las listas publicas (tools/proxy/fuentes-ranking.txt + afk/proxy-fuentes.txt de la rama
 # de control) contra el server, repartidos en 20 jobs, 4 vueltas cada uno. Cada job deja en su log solo cantidades y
-# un bloque cifrado con tools/proxy/ranking-cert.pem (los mejores 80 de su parte); Claude los descifra con la privada.
+# su lista cifrada con tools/proxy/ranking-cert.pem; el job juntar las sube a la rama ranking-proxys; Claude los descifra con la privada.
 on:
   workflow_dispatch:
 permissions:
@@ -30,5 +30,33 @@ jobs:
           export AFK_PROXY_FUENTES="$(grep -E '^https?://' tools/proxy/fuentes-ranking.txt) $F"
           ulimit -n 8192 || true
           python3 tools/proxy/ranking-lote.py --server "$S" --parte ${{ matrix.parte }} --partes 20 --hilos 300 --vueltas 3 --salida /tmp/r.tsv
-          { echo "# parte ${{ matrix.parte }}, $(date -u +%F' '%H:%M) UTC, desde un runner de GitHub"; head -80 /tmp/r.tsv; } \
-            | openssl cms -encrypt -aes256 -outform PEM tools/proxy/ranking-cert.pem
+          mkdir -p out
+          { echo "# parte ${{ matrix.parte }}, $(date -u +%F' '%H:%M) UTC, desde un runner de GitHub"; cat /tmp/r.tsv; } \
+            | openssl cms -encrypt -aes256 -outform PEM tools/proxy/ranking-cert.pem > out/parte-${{ matrix.parte }}.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parte-${{ matrix.parte }}
+          path: out/
+          retention-days: 2
+  juntar:
+    # deja las 20 partes (cifradas) en la rama ranking-proxys: Claude las baja con git y las descifra
+    needs: parte
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: partes
+          merge-multiple: true
+      - name: Subir a la rama ranking-proxys
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls partes | wc -l
+          git init -q r && cd r && git checkout -q -b ranking-proxys
+          mkdir -p ultimo && cp ../partes/*.pem ultimo/
+          echo "run ${{ github.run_id }} $(date -u +%F' '%H:%M) UTC" > ultimo/LEEME.txt
+          git add ultimo && git -c user.name=ranking -c user.email=ranking@users.noreply.github.com commit -qm "ranking ${{ github.run_id }}"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ranking-proxys
