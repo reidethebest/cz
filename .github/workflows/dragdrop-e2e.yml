@@ -46,7 +46,14 @@ jobs:
 
       - name: Compila el cliente
         working-directory: /tmp/src/minecadia
-        run: chmod +x gradlew && ./gradlew --no-daemon -q --no-build-cache reobfShadowJar && echo COMPILA_OK
+        run: |
+          # jitpack (ForgeGradle de ccbluex) a veces no responde: hasta 4 intentos
+          chmod +x gradlew
+          for i in 1 2 3 4; do
+            ./gradlew --no-daemon -q --no-build-cache reobfShadowJar > /tmp/build.log 2>&1 && { echo COMPILA_OK; exit 0; }
+            echo "intento $i fallo:"; grep -E "wrong|not found|Could not|^e: |error:" /tmp/build.log | head -15; sleep 60
+          done
+          exit 1
 
       - name: Tests de DragDrop
         working-directory: /tmp/src/minecadia
