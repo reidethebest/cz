@@ -27,7 +27,7 @@ focus; sleep 1
 # the window had no focus right after joining, so the game opened the pause menu: close it before typing
 for i in 1 2 3; do
   shot 00-start-$i
-  python3 "$(dirname "$0")/ocr.py" "$OUT/00-start-$i.png" achievements > /dev/null || break
+  python3 "$(dirname "$0")/ocr.py" "$OUT/00-start-$i.png" statistic > /dev/null || break
   echo "pause menu open, closing it"; key Escape; sleep 1
 done
 chat ";t DragDrop"
