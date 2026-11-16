@@ -1,0 +1,119 @@
+name: dragdrop-e2e
+
+# DragDrop (minecadia-client): compila la rama, corre sus tests y lo prueba con el cliente real (Forge 1.8.9 en Xvfb,
+# manejado con xdotool) contra un Paper 1.8.8 local con el plugin tools/DragDropE2E, que anota cada item tirado.
+# Las fuentes se bajan con MINECADIA_READ_TOKEN y nunca se suben: ni el jar ni el codigo salen del runner.
+
+on:
+  push:
+    branches: [dragdrop-e2e]
+  workflow_dispatch:
+    inputs:
+      rama:
+        description: rama de minecadia-client
+        default: claude/project-thread-78szro
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dragdrop-e2e
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fuentes privadas
+        env:
+          TOKEN: ${{ secrets.MINECADIA_READ_TOKEN }}
+          RAMA: ${{ github.event.inputs.rama || 'claude/project-thread-78szro' }}
+        run: |
+          test -n "$TOKEN" || { echo "falta el secret MINECADIA_READ_TOKEN"; exit 1; }
+          git init -q /tmp/src
+          git -C /tmp/src -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
+            fetch -q --depth 1 --no-tags https://github.com/reidethebest/minecadia-client.git "$RAMA"
+          git -C /tmp/src -c advice.detachedHead=false checkout -q FETCH_HEAD
+          git -C /tmp/src log -1 --format='rama %h'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Compila el cliente
+        working-directory: /tmp/src/minecadia
+        run: chmod +x gradlew && ./gradlew --no-daemon -q --no-build-cache reobfShadowJar && echo COMPILA_OK
+
+      - name: Tests de DragDrop
+        working-directory: /tmp/src/minecadia
+        run: |
+          ./gradlew --no-daemon -q test --tests '*DragDrop*' > /tmp/tests.log 2>&1 && echo TESTS_OK || {
+            grep -E "FAILED|Exception|^e: " /tmp/tests.log | head -40; exit 1; }
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for f in glob.glob("build/test-results/test/*DragDrop*.xml"):
+              r = ET.parse(f).getroot()
+              print(r.get("name").split(".")[-1], "tests", r.get("tests"), "fallas", r.get("failures"), "errores", r.get("errors"))
+          PY
+
+      - name: Paper 1.8.8 + plugin
+        run: |
+          mkdir -p server/plugins
+          curl -fsSL -o paper.jar https://fill-data.papermc.io/v1/objects/7ff6d2cec671ef0d95b3723b5c92890118fb882d73b7f8fa0a2cd31d97c55f86/paper-1.8.8-445.jar
+          echo "7ff6d2cec671ef0d95b3723b5c92890118fb882d73b7f8fa0a2cd31d97c55f86  paper.jar" | sha256sum -c
+          mkdir pc && (cd pc && timeout 600 java -Dpaperclip.patchonly=true -jar ../paper.jar nogui < /dev/null > ../paperclip.log 2>&1 || true)
+          cp pc/cache/patched_1.8.8.jar server/paper.jar
+          cd tools/DragDropE2E && mkdir -p out && javac -encoding UTF-8 -source 8 -target 8 -cp ../../server/paper.jar -d out src/dde/*.java \
+            && cp plugin.yml out/ && jar cf ../../server/plugins/DragDropE2E.jar -C out .
+          cd ../../server
+          echo "eula=true" > eula.txt
+          printf 'online-mode=false\nlevel-type=FLAT\ngenerate-structures=false\nspawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nview-distance=4\ngamemode=0\n' > server.properties
+          nohup java -Xmx1G -jar paper.jar nogui > server.log 2>&1 &
+          for i in $(seq 1 120); do grep -q "Done (" server.log && break; sleep 2; done
+          grep "Done (" server.log
+
+      - name: Cliente (portablemc, Forge 1.8.9)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xdotool imagemagick libgl1-mesa-dri libglx-mesa0 x11-xserver-utils libxrandr2 libxcursor1 libxxf86vm1 libxtst6 > /dev/null
+          pip install -q portablemc==5.0.6
+          portablemc --main-dir "$PWD/mc" start --dry forge::1.8.9-11.15.1.2318-1.8.9 > pmc.log 2>&1 || { tail -20 pmc.log; exit 1; }
+          mkdir -p mc/mods
+          JAR=$(ls -S /tmp/src/minecadia/build/libs/*.jar | grep -v sources | head -1)
+          cp "$JAR" mc/mods/minecadia.jar
+          rm -rf /tmp/src
+
+      - name: Corre el cliente y lo maneja
+        run: |
+          set +e
+          Xvfb :99 -screen 0 1280x720x24 > /dev/null 2>&1 &
+          sleep 2
+          export DISPLAY=:99
+          nohup portablemc --main-dir "$PWD/mc" start -u Tester --jvm-arg=-Xmx2G --resolution 854x480 --join-server 127.0.0.1 \
+            forge::1.8.9-11.15.1.2318-1.8.9 > client.out 2>&1 &
+          for i in $(seq 1 150); do grep -q "DD READY" server/server.log && break; sleep 2; done
+          grep -E "joined|DD READY" server/server.log || { echo "el cliente no entro"; grep -aE "Exception|Error|FATAL" client.out | head -40; tail -40 client.out; exit 1; }
+          sleep 6
+          OUT=shots bash tools/DragDropE2E/drive.sh
+          echo "=== chat del cliente ==="
+          grep -a "\[CHAT\]" client.out | tail -30
+          echo "=== errores del cliente ==="
+          grep -aE "DragDrop|Mixin.*(DragDrop|error)|Exception" client.out | head -30
+          exit 0
+
+      - name: Verifica
+        run: python3 tools/DragDropE2E/check.py server/server.log
+
+      - name: Capturas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dragdrop-shots
+          path: |
+            shots/*.png
+            server/server.log
+          retention-days: 7

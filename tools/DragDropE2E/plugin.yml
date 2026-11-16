@@ -1,0 +1,8 @@
+name: DragDropE2E
+version: 1.0
+main: dde.DropLog
+commands:
+  ddmark:
+    description: marks the start of a pass in the log
+  ddfill:
+    description: refills the test inventory
