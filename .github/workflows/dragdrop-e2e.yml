@@ -44,14 +44,14 @@ jobs:
           distribution: temurin
           java-version: '8'
 
-      - name: Diagnostico jitpack
+      - name: ForgeGradle fijo (jitpack no arma FG_2.1-SNAPSHOT, "gitError"; el commit a3d86a59c0 si)
+        working-directory: /tmp/src/minecadia
         run: |
-          for u in com/github/ccbluex/ForgeGradle/FG_2.1-SNAPSHOT/maven-metadata.xml \
-                   com/github/ccbluex/ForgeGradle/FG_2.1-SNAPSHOT/ForgeGradle-FG_2.1-SNAPSHOT.pom \
-                   com/github/xcfrg/mixingradle/ae2a80e/mixingradle-ae2a80e.pom; do
-            echo "$u -> $(curl -sS -m 120 -o /tmp/r -w '%{http_code}' https://jitpack.io/$u) $(head -c 300 /tmp/r | tr '\n' ' ')"
+          for v in a3d86a59c0 a3d86a5; do
+            c=$(curl -sS -m 300 -o /dev/null -w '%{http_code}' -L https://jitpack.io/com/github/ccbluex/ForgeGradle/$v/ForgeGradle-$v.pom)
+            echo "$v -> $c"; [ "$c" = 200 ] && { sed -i "s/^forgegradle_version.*/forgegradle_version = $v/" gradle.properties; break; }
           done
-          curl -sS -m 60 https://jitpack.io/api/builds/com.github.ccbluex/ForgeGradle/FG_2.1-SNAPSHOT | head -c 600; echo
+          grep forgegradle_version gradle.properties
 
       - name: Compila el cliente
         working-directory: /tmp/src/minecadia
