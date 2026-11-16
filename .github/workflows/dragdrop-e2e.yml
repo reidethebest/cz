@@ -44,14 +44,14 @@ jobs:
           distribution: temurin
           java-version: '8'
 
-      - name: ForgeGradle fijo (jitpack no arma FG_2.1-SNAPSHOT, "gitError"; el commit a3d86a59c0 si)
-        working-directory: /tmp/src/minecadia
+      - name: ForgeGradle desde GitHub (jitpack no arma FG_2.1-SNAPSHOT, "gitError")
         run: |
-          for v in a3d86a59c0 a3d86a5; do
-            c=$(curl -sS -m 300 -o /dev/null -w '%{http_code}' -L https://jitpack.io/com/github/ccbluex/ForgeGradle/$v/ForgeGradle-$v.pom)
-            echo "$v -> $c"; [ "$c" = 200 ] && { sed -i "s/^forgegradle_version.*/forgegradle_version = $v/" gradle.properties; break; }
-          done
-          grep forgegradle_version gradle.properties
+          # mismo commit que jitpack anuncia (a3d86a5), publicado en mavenLocal con las coordenadas que pide settings.gradle
+          git clone -q --depth 1 -b FG_2.1 https://github.com/CCBlueX/ForgeGradle /tmp/ForgeGradle
+          cd /tmp/ForgeGradle && git log -1 --format='ForgeGradle %h'
+          sed -i "s/^group = .*/group = 'com.github.ccbluex'/; s/^version = .*/version = 'FG_2.1-SNAPSHOT'/" build.gradle
+          ./gradlew --no-daemon -q publishToMavenLocal -x test -x javadoc > /tmp/fg.log 2>&1 || { tail -40 /tmp/fg.log; exit 1; }
+          ls ~/.m2/repository/com/github/ccbluex/ForgeGradle/FG_2.1-SNAPSHOT/
 
       - name: Compila el cliente
         working-directory: /tmp/src/minecadia
