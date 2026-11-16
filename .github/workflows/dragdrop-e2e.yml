@@ -98,13 +98,14 @@ jobs:
       - name: Cliente (portablemc, Forge 1.8.9)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb xdotool imagemagick libgl1-mesa-dri libglx-mesa0 x11-xserver-utils libxrandr2 libxcursor1 libxxf86vm1 libxtst6 > /dev/null
+          sudo apt-get install -y -qq xvfb xdotool imagemagick tesseract-ocr libgl1-mesa-dri libglx-mesa0 x11-xserver-utils libxrandr2 libxcursor1 libxxf86vm1 libxtst6 > /dev/null
           pip install -q portablemc==5.0.6
           portablemc --main-dir "$PWD/mc" start --dry forge::1.8.9-11.15.1.2318-1.8.9 > pmc.log 2>&1 || { tail -20 pmc.log; exit 1; }
           mkdir -p mc/mods
           JAR=$(ls -S /tmp/src/minecadia/build/libs/*.jar | grep -v sources | head -1)
           cp "$JAR" mc/mods/minecadia.jar
           rm -rf /tmp/src
+          python3 tools/DragDropE2E/servers_dat.py mc/servers.dat
 
       - name: Corre el cliente y lo maneja
         run: |
@@ -112,10 +113,10 @@ jobs:
           Xvfb :99 -screen 0 1280x720x24 > /dev/null 2>&1 &
           sleep 2
           export DISPLAY=:99
-          nohup portablemc --main-dir "$PWD/mc" start -u Tester --jvm-arg=-Xmx2G --resolution 854x480 --join-server 127.0.0.1 \
+          nohup portablemc --main-dir "$PWD/mc" start -u Tester --jvm-arg=-Xmx2G --resolution 854x480 \
             forge::1.8.9-11.15.1.2318-1.8.9 > client.out 2>&1 &
-          for i in $(seq 1 150); do grep -q "DD READY" server/server.log && break; sleep 2; done
-          grep -E "joined|DD READY" server/server.log || { echo "el cliente no entro"; grep -aE "Exception|Error|FATAL" client.out | head -40; tail -40 client.out; exit 1; }
+          OUT=shots bash tools/DragDropE2E/join.sh
+          grep -E "joined|DD READY" server/server.log || { echo "el cliente no entro"; grep -aE -A14 "Server Connector|Client thread\] \[ERROR\] java.lang.NullPointer" client.out | grep -v "Saved config" | head -60; tail -15 server/server.log; exit 1; }
           sleep 6
           OUT=shots bash tools/DragDropE2E/drive.sh
           echo "=== chat del cliente ==="
