@@ -1,21 +1,27 @@
 #!/bin/bash
-# Drives the real client with xdotool. Window 854x480 -> GUI scale 2, survival inventory at guiLeft=125 guiTop=37:
-# slot (sx,sy) of GuiInventory has its center at window pixel ((133+sx)*2, (45+sy)*2).
+# Drives the real client with xdotool. Slot positions come from the window size and Minecraft's automatic GUI
+# scale: survival inventory is 176x166 centered, slot (sx,sy) has its center at GUI (guiLeft+sx+8, guiTop+sy+8).
 set -u
 OUT=${OUT:-out}; mkdir -p "$OUT"
 W=$(xdotool search --name "Minecraft" 2>/dev/null | head -1)
 [ -n "$W" ] || { echo "no Minecraft window"; exit 1; }
-xdotool getwindowgeometry $W
+eval $(xdotool getwindowgeometry --shell $W)
+S=1; while [ $((WIDTH / (S + 1))) -ge 320 ] && [ $((HEIGHT / (S + 1))) -ge 240 ]; do S=$((S + 1)); done
+GW=$(( (WIDTH + S - 1) / S )); GH=$(( (HEIGHT + S - 1) / S ))
+GL=$(( (GW - 176) / 2 )); GT=$(( (GH - 166) / 2 ))
 mv_() { xdotool mousemove --window $W "$1" "$2"; }
-px() { echo $(( (133 + 8 + 18 * $1) * 2 )); }      # column 0..8 -> x
-ROW1=258; ROW2=294; HELMET_X=282; HELMET_Y=106
+px() { echo $(( (GL + 8 + 18 * $1 + 8) * S )); }      # column 0..8 -> x
+ROW1=$(( (GT + 84 + 8) * S )); ROW2=$(( (GT + 102 + 8) * S ))
+HELMET_X=$(( (GL + 8 + 8) * S )); HELMET_Y=$(( (GT + 8 + 8) * S ))
+CX=$(( WIDTH / 2 )); CY=$(( HEIGHT / 2 ))
+echo "window ${WIDTH}x${HEIGHT} scale $S gui ${GW}x${GH} inv at $GL,$GT"
 key() { xdotool keydown "$1"; sleep 0.12; xdotool keyup "$1"; sleep 0.4; }
 chat() { key t; sleep 0.5; xdotool type --delay 40 "$1"; sleep 0.3; key Return; sleep 0.8; }
 shot() { import -window root "$OUT/$1.png" 2>/dev/null || true; }
-inv() { mv_ 427 240; key e; sleep 1.2; }
+inv() { mv_ $CX $CY; key e; sleep 1.2; }
 close() { key Escape; sleep 0.8; }
 
-mv_ 427 240; sleep 1
+mv_ $CX $CY; sleep 1
 chat ";t DragDrop"
 shot 00-enabled
 
