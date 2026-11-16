@@ -1,7 +1,8 @@
 """ocr.py IMG [WORD]  -> prints the text seen on screen; with WORD prints 'x y' (screen pixels) of its first match."""
 import subprocess, sys
 img, word = sys.argv[1], (sys.argv[2].lower() if len(sys.argv) > 2 else None)
-subprocess.run(["convert", img, "-resize", "200%", "-colorspace", "Gray", "-negate", "/tmp/ocr.png"], check=True)
+# white/gray GUI text on a busy background: keep only bright pixels, black text on white for tesseract
+subprocess.run(["convert", img, "-resize", "200%", "-colorspace", "Gray", "-threshold", "75%", "-negate", "/tmp/ocr.png"], check=True)
 tsv = subprocess.run(["tesseract", "/tmp/ocr.png", "stdout", "--psm", "11", "tsv"], capture_output=True, text=True).stdout
 words = []
 for l in tsv.splitlines()[1:]:
