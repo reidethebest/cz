@@ -56,11 +56,14 @@ jobs:
       - name: Compila el cliente
         working-directory: /tmp/src/minecadia
         run: |
-          # jitpack (ForgeGradle de ccbluex) a veces no responde: hasta 4 intentos
+          # lo que jitpack no sirva (404/gitError) se arma desde GitHub con tools/DragDropE2E/jitpack-local.sh
           chmod +x gradlew
-          for i in 1 2 3 4; do
+          for i in 1 2 3 4 5 6; do
             ./gradlew --no-daemon -q --no-build-cache reobfShadowJar > /tmp/build.log 2>&1 && { echo COMPILA_OK; exit 0; }
-            echo "intento $i fallo:"; grep -E "wrong|not found|Could not|^e: |error:" /tmp/build.log | head -15; sleep 60
+            echo "intento $i fallo:"; grep -E "wrong|not found|Could not|^e: |error:" /tmp/build.log | head -15
+            miss=$(grep -oE "Could not find com\.github\.[^ :]+:[^ :]+:[^ .]+" /tmp/build.log | sed 's/Could not find //' | sort -u)
+            [ -n "$miss" ] || exit 1
+            for m in $miss; do bash "$GITHUB_WORKSPACE/tools/DragDropE2E/jitpack-local.sh" "$m"; done
           done
           exit 1
 
