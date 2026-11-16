@@ -23,11 +23,15 @@ inv() { mv_ $CX $CY; key e; sleep 1.2; }
 close() { key Escape; sleep 0.8; }
 
 mv_ $CX $CY; sleep 1
-focus; xdotool getwindowfocus
+focus; sleep 1
+# the window had no focus right after joining, so the game opened the pause menu: close it before typing
+for i in 1 2 3; do
+  shot 00-start-$i
+  python3 "$(dirname "$0")/ocr.py" "$OUT/00-start-$i.png" achievements > /dev/null || break
+  echo "pause menu open, closing it"; key Escape; sleep 1
+done
 chat ";t DragDrop"
-shot 00-enabled; python3 "$(dirname "$0")/ocr.py" "$OUT/00-enabled.png"
-grep -a "\[CHAT\]" client.out | tail -3
-
+grep -aq "Enabled module .*DragDrop" client.out || { echo "DragDrop did not turn on"; grep -a "\[CHAT\]" client.out | tail -5; exit 1; }
 # Pass A (defaults: Stack, Delay 0): Q pressed while already on column 0 (vanilla drop must NOT fire too),
 # one single jump to column 8 (the slots in between must still be thrown), slow way back (no re-throw),
 # then up to the helmet (armor is skipped).
