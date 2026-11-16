@@ -21,7 +21,10 @@ expect("A: las 9 pilas enteras de la fila 1, en orden, una vez cada una (salto r
        [(t, a) for _, t, a in A], [(t, 16) for t in ROW1])
 expect("B: 1 item de cada slot de la fila 2, una vez cada uno", [(t, a) for _, t, a in B], [(t, 1) for t in ROW2])
 gaps = [b[0] - a[0] for a, b in zip(B, B[1:])]
-expect("B: delay respetado (>=100 ms entre tiros en el server)", all(g >= 100 for g in gaps) and len(gaps) == 8, True)
+# the server handles packets once per tick (50 ms), so a 150 ms client delay shows up as 100 or 200 ms gaps there:
+# check the whole span (8 gaps >= 8*150 ms minus one tick of jitter per end) and that no two throws share a tick
+expect("B: delay de 150 ms respetado (suma de los 8 intervalos >= 1100 ms, ninguno < 50 ms)",
+       len(gaps) == 8 and sum(gaps) >= 8 * 150 - 100 and min(gaps) >= 50, True)
 print("   gaps B (ms):", gaps)
 expect("C: RedropOnReenter (COAL x3, IRON_INGOT x2)", sorted((t, a) for _, t, a in C),
        sorted([("COAL", 1)] * 3 + [("IRON_INGOT", 1)] * 2))
