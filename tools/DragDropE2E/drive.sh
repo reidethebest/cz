@@ -15,15 +15,18 @@ ROW1=$(( (GT + 84 + 8) * S )); ROW2=$(( (GT + 102 + 8) * S ))
 HELMET_X=$(( (GL + 8 + 8) * S )); HELMET_Y=$(( (GT + 8 + 8) * S ))
 CX=$(( WIDTH / 2 )); CY=$(( HEIGHT / 2 ))
 echo "window ${WIDTH}x${HEIGHT} scale $S gui ${GW}x${GH} inv at $GL,$GT"
+focus() { xdotool windowfocus --sync $W 2>/dev/null || xdotool windowfocus $W; }
 key() { xdotool keydown "$1"; sleep 0.12; xdotool keyup "$1"; sleep 0.4; }
-chat() { key t; sleep 0.5; xdotool type --delay 40 "$1"; sleep 0.3; key Return; sleep 0.8; }
+chat() { focus; key t; sleep 0.5; xdotool type --delay 40 "$1"; sleep 0.3; key Return; sleep 0.8; }
 shot() { import -window root "$OUT/$1.png" 2>/dev/null || true; }
 inv() { mv_ $CX $CY; key e; sleep 1.2; }
 close() { key Escape; sleep 0.8; }
 
 mv_ $CX $CY; sleep 1
+focus; xdotool getwindowfocus
 chat ";t DragDrop"
-shot 00-enabled
+shot 00-enabled; python3 "$(dirname "$0")/ocr.py" "$OUT/00-enabled.png"
+grep -a "\[CHAT\]" client.out | tail -3
 
 # Pass A (defaults: Stack, Delay 0): Q pressed while already on column 0 (vanilla drop must NOT fire too),
 # one single jump to column 8 (the slots in between must still be thrown), slow way back (no re-throw),
